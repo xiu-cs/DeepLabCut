@@ -700,13 +700,39 @@ class DynamicSkeleton:
             self.parent_mapping['root_tail'] = None
             self.dynamic_skeleton.append(('root_tail', 'C_hip'))
     
-    def change_name_to_idx_dynamic_skeleton(self, dynamic_skeleton):
-        # change the dynamic skeleton index to the new index;
-        dynamic_skeleton = []
+    def change_name_to_idx_dynamic_skeleton(self):
+        """
+        Convert dynamic skeleton from keypoint names to numerical indices.
+        
+        This function takes the dynamic skeleton stored in self.dynamic_skeleton,
+        which contains tuples of keypoint names (e.g., ('head', 'neck')),
+        and converts them to tuples of numerical indices based on the position
+        of each keypoint name in self.keypoints list.
+        
+        Returns:
+            list: A list of tuples where each tuple contains (from_idx, to_idx)
+                  representing the indices of connected keypoints in the skeleton.
+                  
+        Example:
+            If self.keypoints = ['head', 'neck', 'shoulder'] and 
+            self.dynamic_skeleton = [('head', 'neck'), ('neck', 'shoulder')]
+            Returns: [(0, 1), (1, 2)]
+        """
+        # Initialize empty list to store converted skeleton indices
+        result = []
+        
+        # Iterate through each connection in the dynamic skeleton
         for idx, (from_node, end_node) in enumerate(self.dynamic_skeleton):
-            # print((self.keypoints.index(from_node), self.keypoints.index(end_node)))
-            dynamic_skeleton.append((self.keypoints.index(from_node), self.keypoints.index(end_node)))
-        return dynamic_skeleton
+            # Convert keypoint names to their corresponding indices in self.keypoints
+            # from_node: the starting keypoint of the connection
+            # end_node: the ending keypoint of the connection
+            from_idx = self.keypoints.index(from_node)
+            end_idx = self.keypoints.index(end_node)
+            
+            # Add the converted indices as a tuple to the result list
+            result.append((from_idx, end_idx))
+            
+        return result
         
         
     def find_nearest_ancestor(self, node):
@@ -735,7 +761,7 @@ class DynamicSkeleton:
         elif self.confidence_dict.get('C_hip') < self.p_cutoff and self.confidence_dict.get('neck') > self.p_cutoff and self.confidence_dict.get('root_tail') > self.p_cutoff:
             self.dynamic_skeleton.append(('root_tail', 'neck'))
             
-        return self.change_name_to_idx_dynamic_skeleton(self.dynamic_skeleton) 
+        return self.change_name_to_idx_dynamic_skeleton() 
     
 def plot_gt_and_predictions_PFM(
     image_path: Union[str, Path],
