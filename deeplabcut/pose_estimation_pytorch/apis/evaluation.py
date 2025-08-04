@@ -709,7 +709,7 @@ class DynamicSkeleton:
         return dynamic_skeleton
         
         
-    def find_nearest_ancester(self, node):
+    def find_nearest_ancestor(self, node):
         current_node = self.parent_mapping.get(node)
         while current_node is not None:
             current_node_conf = self.confidence_dict[current_node]
@@ -724,9 +724,9 @@ class DynamicSkeleton:
         for keypoint in self.parent_mapping.keys():
             keypoint_conf = self.confidence_dict[keypoint]
             if keypoint_conf > self.p_cutoff:
-                ancester = self.find_nearest_ancester(keypoint)
-                if ancester is not None:
-                    self.dynamic_skeleton.append((ancester, keypoint))
+                ancestor = self.find_nearest_ancestor(keypoint)
+                if ancestor is not None:
+                    self.dynamic_skeleton.append((ancestor, keypoint))
 
         # add connection between C_hip and neck
         if self.confidence_dict.get('C_hip') > self.p_cutoff and self.confidence_dict.get('neck') > self.p_cutoff:
