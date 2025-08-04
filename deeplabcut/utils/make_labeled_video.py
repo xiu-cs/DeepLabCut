@@ -883,6 +883,9 @@ def proc_video(
             df, filepath, _, _ = auxiliaryfunctions.load_analyzed_data(
                 destfolder, vname, DLCscorer, filtered, track_method
             )
+            full_data = auxiliaryfunctions.load_video_full_data(
+                destfolder, vname, DLCscorer
+            )
             metadata = auxiliaryfunctions.load_video_metadata(
                 destfolder, vname, DLCscorer
             )
