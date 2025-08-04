@@ -46,6 +46,7 @@ def build_bottom_up_postprocessor(
     num_bodyparts: int,
     num_unique_bodyparts: int,
     with_identity: bool = False,
+    with_backbone_features: bool = False,
 ) -> ComposePostprocessor:
     """Creates a postprocessor for bottom-up pose estimation (or object detection)
 
@@ -54,6 +55,9 @@ def build_bottom_up_postprocessor(
         num_bodyparts: the number of bodyparts output by the model
         num_unique_bodyparts: the number of unique_bodyparts output by the model
         with_identity: whether the model has an identity head
+        with_backbone_features: When True, the backbone features are extracted from
+            the output and saved in a `features` key. The `PoseModel` must have its
+            `output_features` attribute set to True, or this will raise an Exception.
 
     Returns:
         A default bottom-up Postprocessor
@@ -70,6 +74,10 @@ def build_bottom_up_postprocessor(
     if with_identity:
         keys_to_concatenate["identity_heatmap"] = ("identity", "heatmap")
         empty_shapes["identity_heatmap"] = (1, 1, max_individuals)
+
+    if with_backbone_features:
+        keys_to_concatenate["features"] = ("backbone", "features")
+        empty_shapes["features"] = (num_bodyparts, 0, 1)
 
     components = [
         ConcatenateOutputs(
@@ -106,7 +114,8 @@ def build_bottom_up_postprocessor(
     if with_identity:
         components.append(
             AssignIndividualIdentities(
-                identity_key="identity_scores", pose_key="bodyparts",
+                identity_key="identity_scores",
+                pose_key="bodyparts",
             )
         )
 
@@ -117,6 +126,7 @@ def build_top_down_postprocessor(
     max_individuals: int,
     num_bodyparts: int,
     num_unique_bodyparts: int,
+    with_backbone_features: bool = False,
 ) -> Postprocessor:
     """Creates a postprocessor for top-down pose estimation
 
@@ -124,6 +134,9 @@ def build_top_down_postprocessor(
         max_individuals: the maximum number of individuals in a single image
         num_bodyparts: the number of bodyparts output by the model
         num_unique_bodyparts: the number of unique_bodyparts output by the model
+        with_backbone_features: When True, the backbone features are extracted from
+            the output and saved in a `features` key. The `PoseModel` must have its
+            `output_features` attribute set to True, or this will raise an Exception.
 
     Returns:
         A default top-down Postprocessor
@@ -135,6 +148,10 @@ def build_top_down_postprocessor(
         keys_to_concatenate["unique_bodyparts"] = ("unique_bodypart", "poses")
         empty_shapes["unique_bodyparts"] = (num_unique_bodyparts, 3)
         keys_to_rescale.append("unique_bodyparts")
+
+    if with_backbone_features:
+        keys_to_concatenate["features"] = ("backbone", "features")
+        empty_shapes["features"] = (num_bodyparts, 0, 1)
 
     return ComposePostprocessor(
         components=[
@@ -263,6 +280,9 @@ class PadOutputs(Postprocessor):
     ) -> tuple[dict[str, np.ndarray], Context]:
         for name in predictions:
             output = predictions[name]
+            if isinstance(output, list):
+                output = np.array(output)
+
             if (
                 name in self.max_individuals
                 and len(output) < self.max_individuals[name]
@@ -291,7 +311,7 @@ class TrimOutputs(Postprocessor):
         for name in predictions:
             output = predictions[name]
             if len(output) > self.max_individuals[name]:
-                predictions[name] = output[:self.max_individuals[name]]
+                predictions[name] = output[: self.max_individuals[name]]
 
         return predictions, context
 
@@ -364,6 +384,25 @@ class RescaleAndOffset(Postprocessor):
                             output_rescaled[:, :2] = output[:, :2] * scale + offset
                             rescaled_individuals.append(output_rescaled)
                         rescaled = np.stack(rescaled_individuals)
+
+                        # rescoring: https://github.com/amathislab/BUCTD/blob/main/lib/dataset/crowdpose.py#L182-L206
+                        if "cond_kpts" in context:
+                            kpt_scores = rescaled[:, :, 2].copy()
+                            valid_kpt_scores = kpt_scores >= 0.2
+
+                            num_valid_kpts = np.sum(valid_kpt_scores, axis=1)
+                            num_valid_kpts[num_valid_kpts == 0] = 1
+                            kpt_scores[~valid_kpt_scores] = 0
+                            kpt_score_sums = np.sum(kpt_scores, axis=1)
+                            idv_scores = kpt_score_sums / num_valid_kpts
+
+                            cond_kpt_scores = np.mean(
+                                context["cond_kpts"][:, :, 2], axis=1
+                            )
+
+                            rescaled[:, :, 2] = (cond_kpt_scores * idv_scores).reshape(
+                                -1, 1
+                            )
 
                 updated_predictions[name] = rescaled
             else:
@@ -482,4 +521,52 @@ class AssignIndividualIdentities(Postprocessor):
         map_ = assign_identity(predictions["bodyparts"], predictions["identity_scores"])
         predictions["bodyparts"] = predictions["bodyparts"][map_]
         predictions["identity_scores"] = predictions["identity_scores"][map_]
+        return predictions, context
+
+
+class PrepareBackboneFeatures(Postprocessor):
+    """Adds backbone features for each individual and keypoint to the outputs
+
+    Attributes:
+        top_down: Whether the model is a top-down model.
+    """
+
+    def __init__(self, top_down: bool) -> None:
+        self.top_down = top_down
+
+    def __call__(self, predictions: Any, context: Context) -> tuple[Any, Context]:
+        if self.top_down:
+            input_w, input_h = context["top_down_crop_size"]
+        else:
+            input_w, input_h = context["image_size"]
+
+        for pred in predictions:
+            features: np.ndarray = pred["backbone"]["features"]
+            pose: np.ndarray = pred["bodypart"]["poses"]
+
+            # only extract features from valid pose
+            mask = ~np.all((pose < 0) | np.isnan(pose), axis=(1, 2))
+            pose = pose[mask]
+            pred["bodypart"]["poses"] = pose.copy()
+
+            pose = np.nan_to_num(pose, nan=0)
+
+            num_features, h, w = features.shape
+            backbone_stride = input_w / w, input_h / h
+
+            num_preds, num_keypoints, _ = pose.shape
+
+            bodypart_features = np.zeros((num_preds, num_keypoints, num_features))
+            indices = np.rint(pose[..., :2] / backbone_stride).astype(int)
+            indices[..., 0] = np.clip(indices[..., 0], 0, w - 1)
+            indices[..., 1] = np.clip(indices[..., 1], 0, h - 1)
+
+            for idv, idv_indices in enumerate(indices):
+                for kpt, (x, y) in enumerate(idv_indices):
+                    # only assign features if the pose was defined
+                    if np.sum(x + y) > 0:
+                        bodypart_features[idv, kpt] = features[:, y, x]
+
+            pred["backbone"]["bodypart_features"] = bodypart_features
+
         return predictions, context

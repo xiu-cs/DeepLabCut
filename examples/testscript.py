@@ -35,8 +35,11 @@ import deeplabcut
 from deeplabcut.core.engine import Engine
 from deeplabcut.utils import auxiliaryfunctions
 
+import matplotlib
+matplotlib.use("Agg")  # Non-interactive backend, for CI/CD on Windows
+
 USE_SHELVE = random.choice([True, False])
-MODELS = ["resnet_50", "efficientnet-b0", "mobilenet_v2_0.35"]
+MODELS = ["resnet_50", "efficientnet-b0"]
 
 
 if __name__ == "__main__":
@@ -124,7 +127,7 @@ if __name__ == "__main__":
             videoname,
             "CollectedData_" + scorer + ".h5",
         ),
-        "df_with_missing",
+        key="df_with_missing",
         format="table",
         mode="w",
     )
@@ -232,9 +235,10 @@ if __name__ == "__main__":
     )
 
     print("CREATE VIDEO")
-    deeplabcut.create_labeled_video(
+    successful = deeplabcut.create_labeled_video(
         path_config_file, [newvideo], destfolder=DESTFOLDER, save_frames=True
     )
+    assert all(successful), f"Failed to create a labeled video!"
 
     print("Making plots")
     deeplabcut.plot_trajectories(path_config_file, [newvideo], destfolder=DESTFOLDER)
@@ -284,7 +288,7 @@ if __name__ == "__main__":
             vname,
             "CollectedData_" + scorer + ".h5",
         ),
-        "df_with_missing",
+        key="df_with_missing",
     )
 
     print("MERGING")
@@ -363,18 +367,20 @@ if __name__ == "__main__":
     )
     deeplabcut.filterpredictions(path_config_file, [newvideo2])
 
-    deeplabcut.create_labeled_video(
+    successful = deeplabcut.create_labeled_video(
         path_config_file,
         [newvideo2],
         destfolder=DESTFOLDER,
         displaycropped=True,
         filtered=True,
     )
+    assert all(successful), f"Failed to create a labeled video!"
 
     print("Creating a Johansson video!")
-    deeplabcut.create_labeled_video(
+    successful = deeplabcut.create_labeled_video(
         path_config_file, [newvideo2], destfolder=DESTFOLDER, keypoints_only=True
     )
+    assert all(successful), f"Failed to create a labeled video!"
 
     deeplabcut.plot_trajectories(
         path_config_file, [newvideo2], destfolder=DESTFOLDER, filtered=True

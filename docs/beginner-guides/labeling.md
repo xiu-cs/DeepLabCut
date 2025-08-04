@@ -1,3 +1,4 @@
+(labeling)=
 # Labeling GUI
 
 ## Selecting Frames to Label
@@ -10,7 +11,7 @@ In DeepLabCut, choosing the right frames for labeling is a key step. The trick i
 
 2. **Pick Frames Yourself:** Just like flipping through a photo album, you can go through your video and pick the frames that catch your eye - this is great for finding rare frames. Choose the **`manual`** extraction method.
 
-#### Here's how to get started:
+### Here's how to get started:
 
 - **Step 1:** Click on **`automatic`** in the frame selection area.
 - **Step 2:** Choose **`k-means`** for some variety.
@@ -45,7 +46,9 @@ Alright, you've got your extracted frames ready. Now comes the labeling!
 - **Navigate Through Frames:** Use the slider to go from one frame to the next after you're done labeling.
 - **Save Progress:** Remember to save your work as you go with **`Command and S`** (or **`Ctrl and S`** on Windows).
 
-> 💡 **Note:** For a detailed walkthrough on using the Napari labeling GUI, have a look at the [DeepLabCut Napari Guide](https://deeplabcut.github.io/DeepLabCut/docs/napari_GUI.html). Additionally, you can watch our instructional [YouTube video](https://www.youtube.com/watch?v=hsA9IB5r73E) for more insights and tips.
+> 💡 **Note:** For a detailed walkthrough on using the Napari labeling GUI, have a look at the
+[DeepLabCut Napari Guide](napari-gui). Additionally, you can watch our instructional
+[YouTube video](https://www.youtube.com/watch?v=hsA9IB5r73E) for more insights and tips.
 
 
 ### Completing the Set

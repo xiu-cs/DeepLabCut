@@ -36,10 +36,12 @@ model:
         num_animals: "num_individuals"
         keypoint_score_type: combined
         max_absorb_distance: 75
+        nms_threshold: 0.05
+        apply_pose_nms: true
       heatmap_config:
         channels:
         - 270
-        - 64
+        - 18
         - "num_bodyparts + 1"  # num_bodyparts + center keypoint
         num_blocks: 1
         dilation_rate: 1

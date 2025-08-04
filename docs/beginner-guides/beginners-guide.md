@@ -1,3 +1,4 @@
+(beginners-guide)=
 # Using DeepLabCut 
 <img src="https://images.squarespace-cdn.com/content/v1/57f6d51c9f74566f55ecf271/1572296495650-Y4ZTJ2XP2Z9XF1AD74VW/ke17ZwdGBToddI8pDm48kMulEJPOrz9Y8HeI7oJuXxR7gQa3H78H3Y0txjaiv_0fDoOvxcdMmMKkDsyUqMSsMWxHk725yiiHCCLfrh8O1z5QPOohDIaIeljMHgDF5CVlOqpeNLcJ80NK65_fV7S1UZiU3J6AN9rgO1lHw9nGbkYQrCLTag1XBHRgOrY8YAdXW07ycm2Trb21kYhaLJjddA/DLC_logo_blk-01.png?format=1000w" width="150" title="DLC-live" alt="DLC LIVE!" align="right" vspace = "50">
 
@@ -36,15 +37,15 @@ Now, we are going to install the core dependencies. The way this works is that t
 
 **(1) Install PyTorch**
 
-`PyTorch` is the backend deep-learning language we wrote DLC3 in. To select the right version, head to the [“Install PyTorch”](https://pytorch.org/get-started/locally/) instructions in the official PyTorch Docs. Select your desired PyTorch build, operating system, select conda as your package manager and Python as the language. Select your compute platform (either a CUDA version or CPU only). Then, use the command to install the PyTorch package. Below are a few possible examples:
+`PyTorch` is the backend deep-learning language we wrote DLC3 in. To select the right version, head to the ["Install PyTorch"](https://pytorch.org/get-started/locally/) instructions in the official PyTorch Docs. Select your desired PyTorch build, operating system, select conda as your package manager and Python as the language. Select your compute platform (either a CUDA version or CPU only). Then, use the command to install the PyTorch package. Below are a few possible examples:
 
-- **GPU version of pytorch for CUDA 11.8**
+- **GPU version of pytorch for CUDA 12.4**
 ```
-conda install pytorch cudatoolkit=11.8 -c pytorch
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 ```
 - **CPU only version of pytorch, using the latest version**
 ```
-conda install pytorch cpuonly -c pytorch
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 ```
 
 **(2) Install DeepLabCut** 
@@ -61,7 +62,7 @@ pip install "git+https://github.com/DeepLabCut/DeepLabCut.git@pytorch_dlc#egg=de
 ```
 - OR run for the **Stable release:**
 ```
-pip install "deeplabcut[gui,modelzoo,tf]"
+pip install "deeplabcut[gui,modelzoo,wandb]"
 ```
 - This gives you DeepLabCut, the DLC GUI (gui), our latest neural networks (modelzoo) and a cool data logger (wandb) if you choose to use it later on!
 
@@ -87,7 +88,7 @@ When you first launch the GUI, you'll find three primary main options:
 2. **Load Project:** Use this to resume your on-hold or past work.
 3. **Model Zoo:** Best suited for those who want to explore Model Zoo.
 
-#### Commencing Your Work:
+### Commencing Your Work:
 
 - For a first-time or new user, please click on **`Start New Project`**.
 

@@ -17,6 +17,7 @@ from typing import Iterable
 import numpy as np
 from ruamel.yaml import YAML
 
+import deeplabcut.core.visualization as visualization
 from deeplabcut.core.engine import Engine
 from deeplabcut.generate_training_dataset.metadata import get_shuffle_engine
 
@@ -52,7 +53,7 @@ def get_available_aug_methods(engine: Engine) -> tuple[str, ...]:
     if engine == Engine.TF:
         return "imgaug", "default", "deterministic", "scalecrop", "tensorpack"
     elif engine == Engine.PYTORCH:
-        return ("albumentations", )
+        return ("albumentations",)
 
     raise RuntimeError(f"Unknown augmentation for engine: {engine}")
 
@@ -65,6 +66,8 @@ def train_network(
     displayiters: int | None = None,
     saveiters: int | None = None,
     maxiters: int | None = None,
+    epochs: int | None = None,
+    save_epochs: int | None = None,
     allow_growth: bool = True,
     gputouse: str | None = None,
     autotune: bool = False,
@@ -73,7 +76,15 @@ def train_network(
     superanimal_name: str = "",
     superanimal_transfer_learning: bool = False,
     engine: Engine | None = None,
-    **torch_kwargs,
+    device: str | None = None,
+    snapshot_path: str | Path | None = None,
+    detector_path: str | Path | None = None,
+    batch_size: int | None = None,
+    detector_batch_size: int | None = None,
+    detector_epochs: int | None = None,
+    detector_save_epochs: int | None = None,
+    pose_threshold: float | None = 0.1,
+    pytorch_cfg_updates: dict | None = None,
 ):
     """
     Trains the network with the labels in the training dataset.
@@ -119,6 +130,20 @@ def train_network(
         to dig out the ``pose_config.yaml`` file for the corresponding project.
         If ``None``, the value from there is used, otherwise it is overwritten!
 
+    epochs: optional, default=None
+        Only for the PyTorch engine (equivalent to the `maxiters` parameter for the
+        TensorFlow engine). The maximum number of epochs to train the model for. If
+        None, the value will be read from the `pytorch_config.yaml` file. An epoch is a
+        single pass through the training dataset, which means your model has seen each
+        training image exactly once. So if you have 64 training images for your network,
+        an epoch is 64 iterations with batch size 1 (or 32 iterations with batch size 2,
+        16 with batch size 4, etc.).
+
+    save_epochs: optional, default=None
+        Only for the PyTorch engine (equivalent to the `saveiters` parameter for the
+        TensorFlow engine). The number of epochs between each snapshot save. If
+        None, the value will be read from the `pytorch_config.yaml` file.
+
     allow_growth: bool, optional, default=True.
         Only for the TensorFlow engine.
         For some smaller GPUs the memory issues happen. If ``True``, the memory
@@ -139,7 +164,6 @@ def train_network(
         (as Eldar found out, see https://github.com/tensorflow/tensorflow/issues/13317).
 
     keepdeconvweights: bool, optional, default=True
-        Only for the TensorFlow engine.
         Also restores the weights of the deconvolution layers (and the backbone) when
         training from a snapshot. Note that if you change the number of bodyparts, you
         need to set this to false for re-training.
@@ -165,18 +189,38 @@ def train_network(
         overwrite this by passing the engine as an argument, but this should generally
         not be done.
 
-    torch_kwargs:
-        You can add any keyword arguments for the deeplabcut.pose_estimation_pytorch
-        train_network method here. These arguments are passed to the downstream method.
-        Some of the parameters that can be passed are
-            * ``device`` (the CUDA device to use for training)
-            * ``epochs`` (maximum number of epochs to train the network for)
-            * ``save_epochs`` (the number of epochs between each snapshot saved)
-        `   * ``batch_size`` (the batch size to use while training).
+    device: str, optional, default = None.
+        Only for the PyTorch engine. The device to run the training on (e.g. "cuda:0")
 
-        When training a top-down model, these parameters are also available for the
-        detector, with the parameters ``detector_batch_size``, ``detector_epochs`` and
-        ``detector_save_epochs``.
+    snapshot_path: str or Path, optional, default = None.
+        Only for the PyTorch engine. The path to the pose model snapshot to resume training from.
+
+    detector_path: str or Path, optional, default = None.
+        Only for the PyTorch engine. The path to the detector model snapshot to resume training from.
+
+    batch_size: int, optional, default = None.
+        Only for the PyTorch engine. The batch size to use while training.
+
+    detector_batch_size: int, optional, default = None.
+        Only for the PyTorch engine. The batch size to use while training the detector.
+
+    detector_epochs: int, optional, default = None.
+        Only for the PyTorch engine. The number of epochs to train the detector for.
+
+    detector_save_epochs: int, optional, default = None.
+        Only for the PyTorch engine. The number of epochs between each detector snapshot save.
+
+    pose_threshold: float, optional, default = 0.1.
+        Only for the PyTorch engine. Used for memory-replay. Pseudo-predictions with confidence lower
+            than this threshold are discarded for memory-replay
+
+    pytorch_cfg_updates: dict, optional, default = None.
+        A dictionary of updates to the pytorch config. The keys are the dot-separated
+        paths to the values to update in the config.
+        For example, to update the gpus to run the training on, you can use:
+        ```
+        pytorch_cfg_updates={"runner.gpus": [0,1,2,3]}
+        ```
 
     Returns
     -------
@@ -205,7 +249,7 @@ def train_network(
             batch_size=8,
             epochs=100,
             save_epochs=10,
-            display_iters=50,
+            displayiters=50,
         )
     """
     if engine is None:
@@ -217,6 +261,7 @@ def train_network(
 
     if engine == Engine.TF:
         from deeplabcut.pose_estimation_tensorflow import train_network
+
         if max_snapshots_to_keep is None:
             max_snapshots_to_keep = 5
 
@@ -238,17 +283,26 @@ def train_network(
         )
     elif engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis import train_network
-        _update_device(gputouse, torch_kwargs)
-        if "display_iters" not in torch_kwargs:
-            torch_kwargs["display_iters"] = displayiters
 
         return train_network(
             config,
             shuffle=shuffle,
             trainingsetindex=trainingsetindex,
             modelprefix=modelprefix,
+            device=device,
+            snapshot_path=snapshot_path,
+            detector_path=detector_path,
+            load_head_weights=keepdeconvweights,
+            batch_size=batch_size,
+            epochs=epochs,
+            save_epochs=save_epochs,
+            detector_batch_size=detector_batch_size,
+            detector_epochs=detector_epochs,
+            detector_save_epochs=detector_save_epochs,
+            display_iters=displayiters,
             max_snapshots_to_keep=max_snapshots_to_keep,
-            **torch_kwargs,
+            pose_threshold=pose_threshold,
+            pytorch_cfg_updates=pytorch_cfg_updates,
         )
 
     raise NotImplementedError(f"This function is not implemented for {engine}")
@@ -298,6 +352,7 @@ def return_train_network_path(
 
     if engine == Engine.TF:
         from deeplabcut.pose_estimation_tensorflow import return_train_network_path
+
         return return_train_network_path(
             config,
             shuffle=shuffle,
@@ -305,7 +360,10 @@ def return_train_network_path(
             modelprefix=modelprefix,
         )
     elif engine == Engine.PYTORCH:
-        from deeplabcut.pose_estimation_pytorch.apis.utils import return_train_network_path
+        from deeplabcut.pose_estimation_pytorch.apis.utils import (
+            return_train_network_path,
+        )
+
         return return_train_network_path(
             config,
             shuffle=shuffle,
@@ -328,6 +386,7 @@ def evaluate_network(
     modelprefix: str = "",
     per_keypoint_evaluation: bool = False,
     snapshots_to_evaluate: list[str] | None = None,
+    pcutoff: float | list[float] | dict[str, float] | None = None,
     engine: Engine | None = None,
     **torch_kwargs,
 ):
@@ -356,6 +415,7 @@ def evaluate_network(
         If provided it must be either ``True``, ``False``, ``"bodypart"``, or
         ``"individual"``. Setting to ``True`` defaults as ``"bodypart"`` for
         multi-animal projects.
+        If a detector is used, the predicted bounding boxes will also be plotted.
 
     show_errors: bool, optional, default=True
         Display train and test errors.
@@ -389,6 +449,16 @@ def evaluate_network(
 
     snapshots_to_evaluate: List[str], optional, default=None
         List of snapshot names to evaluate (e.g. ["snapshot-5000", "snapshot-7500"]).
+
+    pcutoff: float | list[float] | dict[str, float] | None, default=None
+        Only for the PyTorch engine. For the TensorFlow engine, please set the pcutoff
+        in the `config.yaml` file.
+        The cutoff to use for computing evaluation metrics. When `None` (default), the
+        cutoff will be loaded from the project config. If a list is provided, there
+        should be one value for each bodypart and one value for each unique bodypart
+        (if there are any). If a dict is provided, the keys should be bodyparts
+        mapping to pcutoff values for each bodypart. Bodyparts that are not defined
+        in the dict will have pcutoff set to 0.6.
 
     engine: Engine, optional, default = None.
         The default behavior loads the engine for the shuffle from the metadata. You can
@@ -431,6 +501,16 @@ def evaluate_network(
             plotting="individual",
         )
 
+    If you have a PyTorch model for which you want to set a different p-cutoff for
+    "left_ear" and "right_ear" bodyparts, and keep the one set in the project config
+    for other bodyparts:
+
+    >>> deeplabcut.evaluate_network(
+    >>>     "/analysis/project/reaching-task/config.yaml",
+    >>>     Shuffles=[0, 1],
+    >>>     pcutoff={"left_ear": 0.8, "right_ear": 0.8},
+    >>> )
+
     Note: This defaults to standard plotting for single-animal projects.
     """
     if engine is None:
@@ -457,6 +537,7 @@ def evaluate_network(
 
     if engine == Engine.TF:
         from deeplabcut.pose_estimation_tensorflow import evaluate_network
+
         return evaluate_network(
             str(config),
             Shuffles=Shuffles,
@@ -472,6 +553,7 @@ def evaluate_network(
         )
     elif engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis import evaluate_network
+
         _update_device(gputouse, torch_kwargs)
         return evaluate_network(
             config,
@@ -479,7 +561,11 @@ def evaluate_network(
             trainingsetindex=trainingsetindex,
             plotting=plotting,
             show_errors=show_errors,
+            comparison_bodyparts=comparisonbodyparts,
+            snapshots_to_evaluate=snapshots_to_evaluate,
+            per_keypoint_evaluation=per_keypoint_evaluation,
             modelprefix=modelprefix,
+            pcutoff=pcutoff,
             **torch_kwargs,
         )
 
@@ -552,6 +638,7 @@ def return_evaluate_network_data(
 
     if engine == Engine.TF:
         from deeplabcut.pose_estimation_tensorflow import return_evaluate_network_data
+
         return return_evaluate_network_data(
             config,
             shuffle=shuffle,
@@ -588,6 +675,7 @@ def analyze_videos(
     use_shelve: bool = False,
     auto_track: bool = True,
     n_tracks: int | None = None,
+    animal_names: list[str] | None = None,
     calibrate: bool = False,
     identity_only: bool = False,
     use_openvino: str | None = None,
@@ -640,7 +728,6 @@ def analyze_videos(
         Saves the predictions in a .csv file.
 
     in_random_order: bool, optional (default=True)
-        Only for the TensorFlow engine.
         Whether or not to analyze videos in a random order.
         This is only relevant when specifying a video directory in `videos`.
 
@@ -654,7 +741,6 @@ def analyze_videos(
         Change batch size for inference; if given overwrites value in ``pose_cfg.yaml``.
 
     cropping: list or None, optional, default=None
-        Currently not supported by the PyTorch engine.
         List of cropping coordinates as [x1, x2, y1, y2].
         Note that the same cropping parameters will then be used for all videos.
         If different video crops are desired, run ``analyze_videos`` on individual
@@ -667,8 +753,7 @@ def analyze_videos(
         Mert Yüksekgönül, Byron Rogers, Matthias Bethge, Mackenzie W. Mathis.
         Source: https://arxiv.org/abs/1909.11229
 
-    dynamic: tuple(bool, float, int) triple containing (state, detectiontreshold, margin)
-        Currently not supported by the PyTorch engine.
+    dynamic: tuple(bool, float, int) triple containing (state, det_threshold, margin)
         If the state is true, then dynamic cropping will be performed. That means that
         if an object is detected (i.e. any body part > detectiontreshold), then object
         boundaries are computed according to the smallest/largest x position and
@@ -683,7 +768,6 @@ def analyze_videos(
         By default, the models are assumed to exist in the project folder.
 
     robust_nframes: bool, optional, default=False
-        Currently not supported by the PyTorch engine.
         Evaluate a video's number of frames in a robust manner.
         This option is slower (as the whole video is read frame-by-frame),
         but does not rely on metadata, hence its robustness against file corruption.
@@ -718,7 +802,6 @@ def analyze_videos(
         rely exclusively on identity prediction.
 
     calibrate: bool, optional, default=False
-        Currently not supported by the PyTorch engine.
         If ``True``, use training data to calibrate the animal assembly procedure. This
         improves its robustness to wrong body part links, but requires very little
         missing data.
@@ -728,6 +811,13 @@ def analyze_videos(
         defined in the config.yaml. Another number can be passed if the number of
         animals in the video is different from the number of animals the model was
         trained on.
+
+    animal_names: list[str], optional
+        If you want the names given to individuals in the labeled data file, you can
+        specify those names as a list here. If given and `n_tracks` is None, `n_tracks`
+        will be set to `len(animal_names)`. If `n_tracks` is not None, then it must be
+        equal to `len(animal_names)`. If it is not given, then `animal_names` will
+        be loaded from the `individuals` in the project config.yaml file.
 
     use_openvino: str, optional
         Only for the TensorFlow engine.
@@ -815,6 +905,7 @@ def analyze_videos(
 
     if engine == Engine.TF:
         from deeplabcut.pose_estimation_tensorflow import analyze_videos
+
         kwargs = {}
         if use_openvino is not None:  # otherwise default comes from tensorflow API
             kwargs["use_openvino"] = use_openvino
@@ -839,12 +930,14 @@ def analyze_videos(
             use_shelve=use_shelve,
             auto_track=auto_track,
             n_tracks=n_tracks,
+            animal_names=animal_names,
             calibrate=calibrate,
             identity_only=identity_only,
             **kwargs,
         )
     elif engine == Engine.PYTORCH:
         from deeplabcut.pose_estimation_pytorch.apis import analyze_videos
+
         _update_device(gputouse, torch_kwargs)
 
         if batchsize is not None:
@@ -864,11 +957,16 @@ def analyze_videos(
             shuffle=shuffle,
             trainingsetindex=trainingsetindex,
             save_as_csv=save_as_csv,
+            in_random_order=in_random_order,
             destfolder=destfolder,
+            dynamic=dynamic,
             modelprefix=modelprefix,
             use_shelve=use_shelve,
             robust_nframes=robust_nframes,
             auto_track=auto_track,
+            n_tracks=n_tracks,
+            animal_names=animal_names,
+            calibrate=calibrate,
             identity_only=identity_only,
             overwrite=False,
             cropping=cropping,
@@ -890,12 +988,80 @@ def create_tracking_dataset(
     batchsize: int | None = None,
     cropping: list[int] | None = None,
     TFGPUinference: bool = True,
-    dynamic: tuple[bool, float, int] = (False, 0.5, 10),
     modelprefix: str = "",
     robust_nframes: bool = False,
     n_triplets: int = 1000,
     engine: Engine | None = None,
-):
+) -> str:
+    """Creates a tracking dataset to train a ReID tracklet stitcher.
+
+    Parameters
+    ----------
+    config: str
+        Full path of the config.yaml file.
+
+    videos: list[str]
+        A list of strings containing the full paths to videos from which to create a
+        tracking dataset, or a path to the directory where all the videos with same
+        extension are stored.
+
+    track_method: str
+        Specifies the tracker used to generate the pose estimation data. Must be either
+        'box', 'skeleton', or 'ellipse'.
+
+    videotype: str, optional, default=""
+        Checks for the extension of the video in case the input to the video is a
+        directory. Only videos with this extension are analyzed. If left unspecified,
+        videos with common extensions ('avi', 'mp4', 'mov', 'mpeg', 'mkv') are kept.
+
+    shuffle: int, optional, default=1
+        An integer specifying the shuffle index of the training dataset used for
+        training the network.
+
+    trainingsetindex: int, optional, default=0
+        Integer specifying which TrainingsetFraction to use.
+        By default the first (note that TrainingFraction is a list in config.yaml).
+
+    gputouse: int or None, optional, default=None
+        Only for the TensorFlow engine (for the PyTorch engine use ``device``).
+        Indicates the GPU to use (see number in ``nvidia-smi``). If you do not have a
+        GPU put ``None``. See:
+            https://nvidia.custhelp.com/app/answers/detail/a_id/3751/~/useful-nvidia-smi-queries
+
+    TFGPUinference: bool, optional, default=True
+        Only for the TensorFlow engine.
+        Perform inference on GPU with TensorFlow code. Introduced in "Pretraining
+        boosts out-of-domain robustness for pose estimation" by Alexander Mathis,
+        Mert Yüksekgönül, Byron Rogers, Matthias Bethge, Mackenzie W. Mathis.
+        Source: https://arxiv.org/abs/1909.11229
+
+    destfolder:
+        Specifies the destination folder for analysis data. If ``None``, the path of
+        the video is used. Note that for subsequent analysis this folder also needs to
+        be passed.
+
+    modelprefix: str, optional, default=""
+        Directory containing the deeplabcut models to use when evaluating the network.
+        By default, the models are assumed to exist in the project folder.
+
+    robust_nframes: bool, optional, default=False
+        Evaluate a video's number of frames in a robust manner.
+        This option is slower (as the whole video is read frame-by-frame),
+        but does not rely on metadata, hence its robustness against file corruption.
+
+    n_triplets: int, default=1000
+        The number of triplets to extract for the dataset.
+
+    engine: Engine, optional, default = None.
+        The default behavior loads the engine for the shuffle from the metadata. You can
+        overwrite this by passing the engine as an argument, but this should generally
+        not be done.
+
+    Returns
+    -------
+    DLCScorer: str
+        the scorer used to analyze the videos
+    """
     if engine is None:
         engine = get_shuffle_engine(
             _load_config(config),
@@ -906,6 +1072,7 @@ def create_tracking_dataset(
 
     if engine == Engine.TF:
         from deeplabcut.pose_estimation_tensorflow import create_tracking_dataset
+
         return create_tracking_dataset(
             config,
             videos,
@@ -914,15 +1081,200 @@ def create_tracking_dataset(
             shuffle=shuffle,
             trainingsetindex=trainingsetindex,
             gputouse=gputouse,
-            save_as_csv=False,  # not used in method
             destfolder=destfolder,
             batchsize=batchsize,
             cropping=cropping,
             TFGPUinference=TFGPUinference,
-            dynamic=dynamic,
             modelprefix=modelprefix,
             robust_nframes=robust_nframes,
             n_triplets=n_triplets,
+        )
+    elif engine == Engine.PYTORCH:
+        from deeplabcut.pose_estimation_pytorch.apis import create_tracking_dataset
+        return create_tracking_dataset(
+            config,
+            videos,
+            track_method,
+            videotype=videotype,
+            shuffle=shuffle,
+            trainingsetindex=trainingsetindex,
+            destfolder=destfolder,
+            batch_size=batchsize,
+            cropping=cropping,
+            modelprefix=modelprefix,
+            robust_nframes=robust_nframes,
+            n_triplets=n_triplets,
+        )
+
+    raise NotImplementedError(f"This function is not implemented for {engine}")
+
+
+def analyze_images(
+    config: str | Path,
+    images: str | Path | list[str] | list[Path],
+    frame_type: str | None = None,
+    destfolder: str | Path | None = None,
+    shuffle: int = 1,
+    trainingsetindex: int = 0,
+    max_individuals: int | None = None,
+    device: str | None = None,
+    snapshot_index: int | None = None,
+    detector_snapshot_index: int | None = None,
+    save_as_csv: bool = False,
+    modelprefix: str = "",
+    plotting: bool | str = False,
+    pcutoff: float | None = None,
+    bbox_pcutoff: float | None = None,
+    plot_skeleton: bool = False,
+) -> dict[str, dict[str, np.ndarray | np.ndarray]]:
+    """Analyzes images with a DeepLabCut model and stores the output in an H5 file.
+
+    This method is only implemented for PyTorch models.
+
+    The labels are stored as Pandas DataFrame, which contains the name of the network,
+    body part name, (x, y) label position in pixels, and the likelihood for each frame
+    per body part.
+
+    Parameters
+    ----------
+    config : str, Path
+        Full path of the project's config.yaml file.
+
+    images: str, Path, list[str], list[Path]
+        The image(s) to run inference on. Can be the path to an image, the path
+        to a directory containing images, or a list of image paths or directories
+        containing images.
+
+    frame_type: string, optional
+        Filters the images to analyze to only the ones with the given suffix (e.g.
+        setting `frame_type`=".png" will only analyze ".png" images). The default
+        behavior analyzes all ".jpg", ".jpeg" and ".png" images.
+
+    destfolder: str, Path, optional
+        The directory where the predictions will be stored. If None, the predictions
+        will be stored in the same directory as the first image given in the `images`
+        argument (if it's a directory, that directory will be used; if it's an image,
+        the directory containing the image will be used).
+
+    shuffle: int, optional
+        An integer specifying the shuffle with which to run image analysis.
+
+    trainingsetindex: int, optional
+        Integer specifying which TrainingsetFraction to use. By default, the first one
+        is used (note that TrainingFraction is a list in config.yaml).
+
+    max_individuals: int, optional
+        The maximum number of individuals to detect in each image. Set to the number of
+        individuals in the project if None.
+
+    device: str, optional
+        The CUDA device to use for training. If None, the device will be taken from the
+        ``pytorch_config.yaml`` file. Examples: {"cpu", "cuda", "cuda:0", "cuda:1"}. For
+        more information, see https://pytorch.org/docs/stable/notes/cuda.html
+
+    snapshot_index: int, optional
+        Index (starting at 0) of the snapshot to use for image analysis. To evaluate the
+        last one, use -1. Default uses the value set in the project config.
+
+    detector_snapshot_index: int, optional
+        Only for Top-Down PyTorch models. If defined, uses the detector with the given
+        index for pose estimation. To evaluate the last one, use -1. Default uses the
+        value set in the project config.
+
+    save_as_csv: bool, optional
+        Saves the predictions in a .csv file. The default is ``False``; if provided it
+        must be either ``True`` or ``False``.
+
+    modelprefix: str, optional
+        Directory containing the deeplabcut models to use when running image analysis.
+        By default, the models are assumed to exist in the project folder.
+
+    plotting: bool, str, default=False
+        Plots the predictions made by the model on the analyzed images. Results will be
+        stored in a folder named `LabeledImages_{scorer}`, where scorer is the name
+        of the model used to analyze the images. This folder will be in the same
+        directory as the file containing the predictions (either the given `destfolder`,
+        or the folder containing the first image to analyze).
+
+        If provided it must be either ``True``, ``False``, ``"bodypart"``, or
+        ``"individual"``. Setting to ``True`` defaults as ``"bodypart"`` for
+        multi-animal projects. If a detector is used, the predicted bounding boxes
+        will also be plotted.
+
+    pcutoff: float, optional, default=None
+        The cutoff score when plotting pose predictions. Must be None or in
+        (0, 1). If None, the pcutoff is read from the project configuration file.
+
+    bbox_pcutoff: float, optional, default=None
+        The cutoff score when plotting bounding box predictions. Must be
+        None or in (0, 1). If None, it is read from the project configuration file.
+
+    plot_skeleton: bool, default=False
+        If a skeleton is defined in the project's config.yaml, whether
+        to plot the skeleton connecting the predicted bodyparts on the images.
+
+    Returns
+    -------
+        A dictionary mapping image paths (as strings) to model predictions.
+
+    Examples
+    --------
+    If you want to analyze all frames in /analysis/project/my_images
+        >>> import deeplabcut
+        >>> deeplabcut.analyze_images(
+        >>>     "/analysis/project/reaching-task/config.yaml",
+        >>>     "/analysis/project/my_images",
+        >>> )
+        >>>
+
+    If you want to analyze two specific images with your shuffle 3 model:
+        >>> import deeplabcut
+        >>> deeplabcut.analyze_images(
+        >>>     "/analysis/project/reaching-task/config.yaml",
+        >>>     images=["image_001.png", "img_002.jpg"],
+        >>>     shuffle=3,
+        >>> )
+        >>>
+
+    If you want to analyze frames in a folder, save them and plot predictions:
+        >>> import deeplabcut
+        >>> deeplabcut.analyze_images(
+        >>>     "/analysis/project/reaching-task/config.yaml",
+        >>>     "/analysis/project/my_images",
+        >>>     shuffle=3,
+        >>>     destfolder="/analysis/project/my_images_analyzed",
+        >>>     plotting=True,
+        >>> )
+        >>>
+    --------
+    """
+    engine = get_shuffle_engine(
+        _load_config(config),
+        trainingsetindex=trainingsetindex,
+        shuffle=shuffle,
+        modelprefix=modelprefix,
+    )
+
+    if engine == Engine.PYTORCH:
+        from deeplabcut.pose_estimation_pytorch import analyze_images
+
+        return analyze_images(
+            config=config,
+            images=images,
+            frame_type=frame_type,
+            output_dir=destfolder,
+            shuffle=shuffle,
+            trainingsetindex=trainingsetindex,
+            snapshot_index=snapshot_index,
+            detector_snapshot_index=detector_snapshot_index,
+            modelprefix=modelprefix,
+            device=device,
+            save_as_csv=save_as_csv,
+            max_individuals=max_individuals,
+            plotting=plotting,
+            pcutoff=pcutoff,
+            bbox_pcutoff=bbox_pcutoff,
+            plot_skeleton=plot_skeleton,
         )
 
     raise NotImplementedError(f"This function is not implemented for {engine}")
@@ -935,6 +1287,7 @@ def analyze_time_lapse_frames(
     shuffle: int = 1,
     trainingsetindex: int = 0,
     gputouse: int | None = None,
+    device: str | None = None,
     save_as_csv: bool = False,
     modelprefix: str = "",
     engine: Engine | None = None,
@@ -942,15 +1295,16 @@ def analyze_time_lapse_frames(
     """
     Analyzed all images (of type = frametype) in a folder and stores the output in one file.
 
-    You can crop the frames (before analysis), by changing 'cropping'=True and setting 'x1','x2','y1','y2' in the config file.
+    You can crop the frames (before analysis), by changing 'cropping'=True and setting
+    'x1','x2','y1','y2' in the config file.
 
-    Output: The labels are stored as MultiIndex Pandas Array, which contains the name of the network, body part name, (x, y) label position \n
-            in pixels, and the likelihood for each frame per body part. These arrays are stored in an efficient Hierarchical Data Format (HDF) \n
-            in the same directory, where the video is stored. However, if the flag save_as_csv is set to True, the data can also be exported in \n
-            comma-separated values format (.csv), which in turn can be imported in many programs, such as MATLAB, R, Prism, etc.
-
-    This function is only implemented for tensorflow models/shuffles, and will throw
-    an error if called with a PyTorch shuffle.
+    Output: The labels are stored as MultiIndex Pandas Array, which contains the name
+    of the network, body part name, (x, y) label position in pixels, and the likelihood
+    for each frame per body part. These arrays are stored in an efficient Hierarchical
+    Data Format (HDF) in the same directory, where the video is stored. However, if the
+    flag save_as_csv is set to True, the data can also be exported in comma-separated
+    values format (.csv), which in turn can be imported in many programs, such as
+    MATLAB, R, Prism, etc.
 
     Parameters
     ----------
@@ -961,27 +1315,46 @@ def analyze_time_lapse_frames(
         Full path to directory containing the frames that shall be analyzed
 
     frametype: string, optional
-        Checks for the file extension of the frames. Only images with this extension are analyzed. The default is ``.png``
+        Checks for the file extension of the frames. Only images with this extension are
+        analyzed. The default is ``.png``
 
     shuffle: int, optional
-        An integer specifying the shuffle index of the training dataset used for training the network. The default is 1.
+        An integer specifying the shuffle index of the training dataset used for
+        training the network. The default is 1.
 
     trainingsetindex: int, optional
-        Integer specifying which TrainingsetFraction to use. By default the first (note that TrainingFraction is a list in config.yaml).
+        Integer specifying which TrainingsetFraction to use. By default the first (note
+        that TrainingFraction is a list in config.yaml).
 
-    gputouse: int, optional. Natural number indicating the number of your GPU (see number in nvidia-smi). If you do not have a GPU put None.
-    See: https://nvidia.custhelp.com/app/answers/detail/a_id/3751/~/useful-nvidia-smi-queries
+    gputouse: int, optional.
+        Only for TensorFlow models. For PyTorch models, please use `device`. Natural
+        number indicating the number of your GPU (see number in nvidia-smi). If you do
+        not have a GPU put None. See:
+            https://nvidia.custhelp.com/app/answers/detail/a_id/3751/~/useful-nvidia-smi-queries
+
+    device: str, optional
+        The CUDA device to use for training. If None, the device will be taken from the
+        ``pytorch_config.yaml`` file. Examples: {"cpu", "cuda", "cuda:0", "cuda:1"}. For
+        more information, see https://pytorch.org/docs/stable/notes/cuda.html
 
     save_as_csv: bool, optional
-        Saves the predictions in a .csv file. The default is ``False``; if provided it must be either ``True`` or ``False``
+        Saves the predictions in a .csv file. The default is ``False``; if provided if
+        must be either ``True`` or ``False``
 
     Examples
     --------
     If you want to analyze all frames in /analysis/project/timelapseexperiment1
-    >>> deeplabcut.analyze_videos('/analysis/project/reaching-task/config.yaml','/analysis/project/timelapseexperiment1')
+    >>> import deeplabcut
+    >>> deeplabcut.analyze_time_lapse_frames(
+    >>>     '/analysis/project/reaching-task/config.yaml',
+    >>>     '/analysis/project/timelapseexperiment1'
+    >>> )
+
     --------
 
-    Note: for test purposes one can extract all frames from a video with ffmeg, e.g. ffmpeg -i testvideo.avi thumb%04d.png
+    Note: for test purposes one can extract all frames from a video with ffmeg, e.g.
+    >>> ffmpeg -i testvideo.avi "thumb%04d.png"
+
     """
     if engine is None:
         engine = get_shuffle_engine(
@@ -993,6 +1366,7 @@ def analyze_time_lapse_frames(
 
     if engine == Engine.TF:
         from deeplabcut.pose_estimation_tensorflow import analyze_time_lapse_frames
+
         return analyze_time_lapse_frames(
             config,
             directory,
@@ -1000,6 +1374,19 @@ def analyze_time_lapse_frames(
             shuffle=shuffle,
             trainingsetindex=trainingsetindex,
             gputouse=gputouse,
+            save_as_csv=save_as_csv,
+            modelprefix=modelprefix,
+        )
+    elif engine == Engine.PYTORCH:
+        from deeplabcut.pose_estimation_pytorch import analyze_images
+
+        return analyze_images(
+            config=config,
+            images=directory,
+            output_dir=directory,
+            shuffle=shuffle,
+            trainingsetindex=trainingsetindex,
+            device=_gpu_to_use_to_device(gputouse, device),
             save_as_csv=save_as_csv,
             modelprefix=modelprefix,
         )
@@ -1090,10 +1477,21 @@ def convert_detections2tracklets(
     Examples
     --------
     If you want to convert detections to tracklets:
-    >>> deeplabcut.convert_detections2tracklets('/analysis/project/reaching-task/config.yaml',[]'/analysis/project/video1.mp4'], videotype='.mp4')
+    >>> import deeplabcut
+    >>> deeplabcut.convert_detections2tracklets(
+    >>>    "/analysis/project/reaching-task/config.yaml",
+    >>>    ["/analysis/project/video1.mp4"],
+    >>>    videotype='.mp4',
+    >>> )
 
     If you want to convert detections to tracklets based on box_tracker:
-    >>> deeplabcut.convert_detections2tracklets('/analysis/project/reaching-task/config.yaml',[]'/analysis/project/video1.mp4'], videotype='.mp4',track_method='box')
+    >>> import deeplabcut
+    >>> deeplabcut.convert_detections2tracklets(
+    >>>    "/analysis/project/reaching-task/config.yaml",
+    >>>    ["/analysis/project/video1.mp4"],
+    >>>    videotype=".mp4",
+    >>>    track_method="box",
+    >>> )
 
     --------
 
@@ -1108,6 +1506,7 @@ def convert_detections2tracklets(
 
     if engine == Engine.TF:
         from deeplabcut.pose_estimation_tensorflow import convert_detections2tracklets
+
         return convert_detections2tracklets(
             config,
             videos,
@@ -1158,6 +1557,7 @@ def extract_maps(
     shuffle: int = 0,
     trainingsetindex: int = 0,
     gputouse: int | None = None,
+    device: str | None = None,
     rescale: bool = False,
     Indices: list[int] | None = None,
     modelprefix: str = "",
@@ -1166,11 +1566,10 @@ def extract_maps(
     """
     Extracts the scoremap, locref, partaffinityfields (if available).
 
-    This function is only implemented for tensorflow models/shuffles, and will throw
-    an error if called with a PyTorch shuffle.
-
     Returns a dictionary indexed by: trainingsetfraction, snapshotindex, and imageindex
-    for those keys, each item contains: (image,scmap,locref,paf,bpt names,partaffinity graph, imagename, True/False if this image was in trainingset)
+    for those keys, each item contains: (image, scmap, locref, paf, bpt_names,
+    partaffinity_graph, imagename, True/False if this image was in trainingset).
+
     ----------
     config : string
         Full path of the config.yaml file as a string.
@@ -1179,8 +1578,19 @@ def extract_maps(
         integers specifying shuffle index of the training dataset. The default is 0.
 
     trainingsetindex: int, optional
-        Integer specifying which TrainingsetFraction to use. By default the first (note that TrainingFraction is a list in config.yaml). This
-        variable can also be set to "all".
+        Integer specifying which TrainingsetFraction to use. By default the first (note
+        that TrainingFraction is a list in config.yaml). This variable can also be set
+        to "all".
+
+    gputouse: int or None, optional, default=None
+        For the TensorFlow engine (for the PyTorch engine see ``device``). Specifies
+        the GPU to use (see number in ``nvidia-smi``). If you do not have a GPU put
+        ``None``. See: https://nvidia.custhelp.com/app/answers/detail/a_id/3751/~/useful-nvidia-smi-queries
+
+    device: str or None, optional, default=None
+        The CUDA device to use for training. If None, the device will be taken from the
+        ``pytorch_config.yaml`` file. Examples: {"cpu", "cuda", "cuda:0", "cuda:1"}. See
+        https://pytorch.org/docs/stable/notes/cuda.html for more information.
 
     rescale: bool, default False
         Evaluate the model at the 'global_scale' variable (as set in the test/pose_config.yaml file for a particular project). I.e. every
@@ -1210,6 +1620,7 @@ def extract_maps(
 
     if engine == Engine.TF:
         from deeplabcut.pose_estimation_tensorflow import extract_maps
+
         return extract_maps(
             config,
             shuffle=shuffle,
@@ -1219,23 +1630,33 @@ def extract_maps(
             Indices=Indices,
             modelprefix=modelprefix,
         )
+    elif engine == Engine.PYTORCH:
+        from deeplabcut.pose_estimation_pytorch import extract_maps
+
+        return extract_maps(
+            config,
+            shuffle=shuffle,
+            trainingsetindex=trainingsetindex,
+            device=_gpu_to_use_to_device(gputouse, device),
+            rescale=rescale,
+            indices=Indices,
+            modelprefix=modelprefix,
+        )
 
     raise NotImplementedError(f"This function is not implemented for {engine}")
 
 
-def visualize_scoremaps(
-    image: np.ndarray, scmap: np.ndarray, engine: Engine = DEFAULT_ENGINE,
-):
-    """
-    This function is only implemented for tensorflow models/shuffles, and will throw
-    an error if called with a PyTorch shuffle.
-    """
-    if engine == Engine.TF:
-        # TODO: also works for Pytorch, but should not import as then requires TF
-        from deeplabcut.pose_estimation_tensorflow import visualize_scoremaps
-        return visualize_scoremaps(image, scmap)
+def visualize_scoremaps(image: np.ndarray, scmap: np.ndarray):
+    """Plots scoremaps as an image overlay.
 
-    raise NotImplementedError(f"This function is not implemented for {engine}")
+    Args:
+        image: An image as a numpy array of shape (h, w, channels)
+        scmap: A scoremap of shape (h, w)
+
+    Returns:
+        The figure and axis on which the image scoremap was plot.
+    """
+    return visualization.visualize_scoremaps(image, scmap)
 
 
 def visualize_locrefs(
@@ -1245,17 +1666,23 @@ def visualize_locrefs(
     locref_y: np.ndarray,
     step: int = 5,
     zoom_width: int = 0,
-    engine: Engine = DEFAULT_ENGINE,
 ):
-    """
-    This function is only implemented for tensorflow models/shuffles, and will throw
-    an error if called with a PyTorch shuffle.
-    """
-    if engine == Engine.TF:
-        from deeplabcut.pose_estimation_tensorflow import visualize_locrefs
-        return visualize_locrefs(image, scmap, locref_x, locref_y, step=step, zoom_width=zoom_width)
+    """Plots a scoremap and the corresponding location refinement field on an image.
 
-    raise NotImplementedError(f"This function is not implemented for {engine}")
+    Args:
+        image: An image as a numpy array of shape (h, w, channels)
+        scmap: A scoremap of shape (h, w)
+        locref_x: The x-coordinate of the location refinement field, of shape (h, w)
+        locref_y: The y-coordinate of the location refinement field, of shape (h, w)
+        step: The step with which to plot the location refinement field.
+        zoom_width: The zoom width with which to plot the scoremaps.
+
+    Returns:
+        The figure and axis on which the image scoremap and locref field were plot.
+    """
+    return visualization.visualize_locrefs(
+        image, scmap, locref_x, locref_y, step=step, zoom_width=zoom_width
+    )
 
 
 def visualize_paf(
@@ -1263,17 +1690,19 @@ def visualize_paf(
     paf: np.ndarray,
     step: int = 5,
     colors: list | None = None,
-    engine: Engine = DEFAULT_ENGINE,
 ):
-    """
-    This function is only implemented for tensorflow models/shuffles, and will throw
-    an error if called with a PyTorch shuffle.
-    """
-    if engine == Engine.TF:
-        from deeplabcut.pose_estimation_tensorflow import visualize_paf
-        return visualize_paf(image, paf, step=step, colors=colors)
+    """Plots the PAF on top of the image.
 
-    raise NotImplementedError(f"This function is not implemented for {engine}")
+    Args:
+        image: Shape (height, width, channels). The image on which the model was run.
+        paf: Shape (height, width, 2 * len(paf_graph)). The PAF output by the model.
+        step: The step with which to plot the scoremaps.
+        colors: The colormap to use.
+
+    Returns:
+        The figure and axis on which the image PAF was plot.
+    """
+    return visualization.visualize_paf(image, paf, step=step, colors=colors)
 
 
 def extract_save_all_maps(
@@ -1283,19 +1712,19 @@ def extract_save_all_maps(
     comparisonbodyparts: str | list[str] = "all",
     extract_paf: bool = True,
     all_paf_in_one: bool = True,
-    gputouse: int = None,
+    gputouse: int | None = None,
+    device: str | None = None,
     rescale: bool = False,
     Indices: list[int] | None = None,
     modelprefix: str = "",
     dest_folder: str = None,
+    snapshot_index: int | str | None = None,
+    detector_snapshot_index: int | str | None = None,
     engine: Engine | None = None,
 ):
     """
     Extracts the scoremap, location refinement field and part affinity field prediction of the model. The maps
     will be rescaled to the size of the input image and stored in the corresponding model folder in /evaluation-results.
-
-    This function is only implemented for tensorflow models/shuffles, and will throw
-    an error if called with a PyTorch shuffle.
 
     ----------
     config : string
@@ -1319,11 +1748,29 @@ def extract_save_all_maps(
         By default, all part affinity fields are displayed on a single frame.
         If false, individual fields are shown on separate frames.
 
+    gputouse: int or None, optional, default=None
+        For the TensorFlow engine (for the PyTorch engine see ``device``). Specifies
+        the GPU to use (see number in ``nvidia-smi``). If you do not have a GPU put
+        ``None``. See: https://nvidia.custhelp.com/app/answers/detail/a_id/3751/~/useful-nvidia-smi-queries
+
+    device: str or None, optional, default=None
+        The CUDA device to use for training. If None, the device will be taken from the
+        ``pytorch_config.yaml`` file. Examples: {"cpu", "cuda", "cuda:0", "cuda:1"}. See
+        https://pytorch.org/docs/stable/notes/cuda.html for more information.
+
     Indices: default None
         For which images shall the scmap/locref and paf be computed? Give a list of images
 
     nplots_per_row: int, optional (default=None)
         Number of plots per row in grid plots. By default, calculated to approximate a squared grid of plots
+
+    snapshot_index: Only for PyTorch models. Index (starting at 0) of the snapshot we
+        want to extract maps with. To evaluate the last one, use -1. To extract maps
+        for all snapshots, use "all". Default uses the value set in the project config.
+
+    detector_snapshot_index: Only for TD PyTorch models. If defined, uses the detector
+        with the given index for pose estimation. To extract maps for all detector
+        snapshots, use "all". Default uses the value set in the project config.
 
     engine: Engine, optional, default = None.
         The default behavior loads the engine for the shuffle from the metadata. You can
@@ -1346,6 +1793,7 @@ def extract_save_all_maps(
 
     if engine == Engine.TF:
         from deeplabcut.pose_estimation_tensorflow import extract_save_all_maps
+
         return extract_save_all_maps(
             config,
             shuffle=shuffle,
@@ -1357,6 +1805,24 @@ def extract_save_all_maps(
             rescale=rescale,
             Indices=Indices,
             modelprefix=modelprefix,
+            dest_folder=dest_folder,
+        )
+    elif engine == Engine.PYTORCH:
+        from deeplabcut.pose_estimation_pytorch import extract_save_all_maps
+
+        return extract_save_all_maps(
+            config,
+            shuffle=shuffle,
+            trainingsetindex=trainingsetindex,
+            comparison_bodyparts=comparisonbodyparts,
+            extract_paf=extract_paf,
+            all_paf_in_one=all_paf_in_one,
+            device=_gpu_to_use_to_device(gputouse, device),
+            rescale=rescale,
+            indices=Indices,
+            modelprefix=modelprefix,
+            snapshot_index=snapshot_index,
+            detector_snapshot_index=detector_snapshot_index,
             dest_folder=dest_folder,
         )
 
@@ -1373,16 +1839,15 @@ def export_model(
     overwrite: bool = False,
     make_tar: bool = True,
     wipepaths: bool = False,
+    without_detector: bool = False,
     modelprefix: str = "",
     engine: Engine | None = None,
-):
+) -> None:
     """Export DeepLabCut models for the model zoo or for live inference.
 
     Saves the pose configuration, snapshot files, and frozen TF graph of the model to
-    directory named exported-models within the project directory
-
-    This function is only implemented for tensorflow models/shuffles, and will throw
-    an error if called with a PyTorch shuffle.
+    directory named exported-models within the project directory (and an
+    `exported-models-pytorch` directory for PyTorch models).
 
     Parameters
     -----------
@@ -1418,6 +1883,9 @@ def export_model(
     wipepaths : bool, optional
         Removes the actual path of your project and the init_weights from pose_cfg.
 
+    without_detector: bool, optional
+        PyTorch engine only. Exports top-down models without the detector.
+
     engine: Engine, optional, default = None.
         The default behavior loads the engine for the shuffle from the metadata. You can
         overwrite this by passing the engine as an argument, but this should generally
@@ -1439,6 +1907,7 @@ def export_model(
 
     if engine == Engine.TF:
         from deeplabcut.pose_estimation_tensorflow import export_model
+
         return export_model(
             cfg_path=cfg_path,
             shuffle=shuffle,
@@ -1451,16 +1920,39 @@ def export_model(
             wipepaths=wipepaths,
             modelprefix=modelprefix,
         )
+    elif engine == Engine.PYTORCH:
+        from deeplabcut.pose_estimation_pytorch.apis.export import export_model
+
+        return export_model(
+            config=cfg_path,
+            shuffle=shuffle,
+            trainingsetindex=trainingsetindex,
+            snapshotindex=snapshotindex,
+            iteration=iteration,
+            overwrite=overwrite,
+            wipe_paths=wipepaths,
+            without_detector=without_detector,
+            modelprefix=modelprefix,
+        )
 
     raise NotImplementedError(f"This function is not implemented for {engine}")
 
 
 def _update_device(gpu_to_use: int | None, torch_kwargs: dict) -> None:
     if "device" not in torch_kwargs and gpu_to_use is not None:
+        device = _gpu_to_use_to_device(gpu_to_use, device=None)
+        if device is not None:
+            torch_kwargs["device"] = device
+
+
+def _gpu_to_use_to_device(gpu_to_use: int | None, device: str | None) -> str | None:
+    if device is None and gpu_to_use is not None:
         if isinstance(gpu_to_use, int):
-            torch_kwargs["device"] = f"cuda:{gpu_to_use}"
+            device = f"cuda:{gpu_to_use}"
         else:
-            torch_kwargs["device"] = gpu_to_use
+            device = gpu_to_use
+
+    return device
 
 
 def _load_config(config: str) -> dict:

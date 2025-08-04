@@ -17,6 +17,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import matplotlib
+matplotlib.use("Agg")  # Non-interactive backend, for CI/CD on Windows
+
+import cv2
 import deeplabcut
 import deeplabcut.utils.auxiliaryfunctions as af
 import numpy as np
@@ -48,10 +52,10 @@ class SyntheticProjectParameters:
     frame_shape: tuple[int, int] = (480, 640)
 
     def bodyparts(self) -> list[str]:
-        return [i for i in string.ascii_lowercase[:self.num_bodyparts]]
+        return [i for i in string.ascii_lowercase[: self.num_bodyparts]]
 
     def unique(self) -> list[str]:
-        return [f"unique_{i}" for i in string.ascii_lowercase[:self.num_unique]]
+        return [f"unique_{i}" for i in string.ascii_lowercase[: self.num_unique]]
 
     def individuals(self) -> list[str]:
         return [f"animal_{i}" for i in range(self.num_individuals)]
@@ -75,35 +79,23 @@ def sample_pose_random(
         unique_pose = np.stack(
             [
                 gen.choice(img_w, size=(1, num_unique), replace=False),
-                gen.choice(img_h, size=(1, num_unique), replace=False)
+                gen.choice(img_h, size=(1, num_unique), replace=False),
             ],
-            axis=-1
+            axis=-1,
         )
         image_data = np.concatenate([image_data, unique_pose.reshape(-1)])
     return image_data
 
 
 def sample_pose_from_center(
-    gen: np.random.Generator,
+    center_xs: np.ndarray,
+    center_ys: np.ndarray,
     num_individuals: int,
     num_bodyparts: int,
     num_unique: int,
-    img_h: int,
-    img_w: int,
     radius: int = 25,
 ) -> np.ndarray:
-    """Sample the center of each individual, then sample the other keypoints"""
-    center_xs = gen.choice(
-        np.arange(radius, img_w - radius),
-        size=num_individuals + 1,  # in case unique bodyparts
-        replace=False,
-    )
-    center_ys = gen.choice(
-        np.arange(radius, img_h - radius),
-        size=num_individuals,  # in case unique bodyparts
-        replace=False,
-    )
-
+    """Sample keypoints from the center of each individual"""
     pose = np.zeros((num_individuals, num_bodyparts, 2))
     for i, (xc, yc) in enumerate(zip(center_xs, center_ys)):
         if i < num_individuals:
@@ -142,23 +134,40 @@ def gen_fake_data(
     index_data = []
     pose_data = []
     gen = np.random.default_rng(seed=0)
+
+    # sample starting points for each individual
+    img_h, img_w = params.frame_shape[:2]
+    radius = 8
+    center_xs = gen.choice(
+        np.arange(radius, img_w - radius),
+        size=params.num_individuals + 1,  # in case unique bodyparts
+        replace=False,
+    )
+    center_ys = gen.choice(
+        np.arange(radius, img_h - radius),
+        size=params.num_individuals + 1,  # in case unique bodyparts
+        replace=False,
+    )
+
     for frame_index in range(params.num_frames):
         index_data.append(("labeled-data", video_name, f"img{frame_index:04}.png"))
         pose_data.append(
             sample_pose_from_center(
-                gen,
+                center_xs,
+                center_ys,
                 num_individuals=params.num_individuals,
                 num_bodyparts=params.num_bodyparts,
                 num_unique=params.num_unique,
-                img_h=params.frame_shape[0],
-                img_w=params.frame_shape[1],
-                radius=25,
+                radius=radius,
             )
         )
+        mvt_x = gen.integers(low=-1, high=4, size=center_xs.size)
+        mvt_y = gen.integers(low=-1, high=4, size=center_ys.size)
+        center_xs = np.clip(center_xs + mvt_x, radius, img_w - radius)
+        center_ys = np.clip(center_ys + mvt_y, radius, img_h - radius)
 
     pose = np.stack(pose_data)
-
-    pose[0, :] = np.nan  # add missing row in a frame
+    pose[params.num_frames // 2, :] = np.nan  # add missing row in a frame
     for idv in range(params.num_individuals):
         idv_start = 2 * params.num_bodyparts * idv
         idv_end = 2 * params.num_bodyparts * (idv + 1)
@@ -230,8 +239,24 @@ def gen_fake_image(
     img.save(project_root / Path(*row.name))
 
 
+def generate_video_from_images(image_dir: Path, output_video: Path) -> None:
+    images = [p for p in image_dir.iterdir() if p.is_file() and p.suffix == ".png"]
+    images = sorted(images, key=lambda f: f.stem)
+    if len(images) == 0:
+        return
+
+    height, width, channels = cv2.imread(str(images[0])).shape
+    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+    out = cv2.VideoWriter(str(output_video), fourcc, 10, (width, height))
+    for img_path in images:
+        img = cv2.imread(str(img_path))
+        out.write(img)
+    out.release()
+
+
 def create_fake_project(path: Path, params: SyntheticProjectParameters) -> None:
     if path.exists():
+        print(f"[DEBUG] Path exists: {path} (is_dir={path.is_dir()}, is_file={path.is_file()})")
         raise ValueError(f"Cannot create a fake project at an existing path")
 
     scorer = "synthetic"
@@ -260,6 +285,9 @@ def create_fake_project(path: Path, params: SyntheticProjectParameters) -> None:
         "start": 0,
         "stop": 1,
         "numframes2pick": 10,
+        "dotsize": 4,
+        "alphavalue": 1.0,
+        "colormap": "rainbow",
     }
     if not params.multianimal:
         config["bodyparts"] = params.bodyparts()
@@ -292,6 +320,10 @@ def create_fake_project(path: Path, params: SyntheticProjectParameters) -> None:
     for idx in range(params.num_frames):
         gen_fake_image(path, df.iloc[idx], params=params, radius=5)
 
+    output_video = path / "videos" / "video.mp4"
+    output_video.parent.mkdir(exist_ok=True)
+    generate_video_from_images(image_dir, output_video)
+
 
 def copy_project_for_test() -> Path:
     data_path = Path.cwd() / "openfield-Pranav-2018-10-30"
@@ -315,67 +347,101 @@ def run(
     net_type: str,
     videos: list[str],
     device: str,
-    train_kwargs: dict,
     engine: Engine = Engine.PYTORCH,
+    pytorch_cfg_updates: dict | None = None,
     create_labeled_videos: bool = False,
 ) -> None:
     times = [time.time()]
     log_step(f"Testing with net type {net_type}")
     log_step("Creating the training dataset")
-    deeplabcut.create_training_dataset(str(config_path), net_type=net_type, engine=engine)
+    deeplabcut.create_training_dataset(
+        str(config_path), net_type=net_type, engine=engine
+    )
     existing_shuffles = get_existing_shuffle_indices(
         config_path, train_fraction=train_fraction, engine=engine
     )
     shuffle_index = existing_shuffles[-1]
 
-    log_step(f"Starting training for train_frac {train_fraction}, shuffle {shuffle_index}")
+    log_step(
+        f"Starting training for train_frac {train_fraction}, shuffle {shuffle_index}"
+    )
     deeplabcut.train_network(
         config=str(config_path),
         shuffle=shuffle_index,
         trainingsetindex=trainset_index,
         device=device,
-        **train_kwargs,
+        pytorch_cfg_updates=pytorch_cfg_updates,
     )
     times.append(time.time())
     log_step(f"Train time: {times[-1] - times[-2]} seconds")
 
-    log_step(f"Starting evaluation for train_frac {train_fraction}, shuffle {shuffle_index}")
+    log_step(
+        f"Starting evaluation for train_frac {train_fraction}, shuffle {shuffle_index}"
+    )
     deeplabcut.evaluate_network(
         config=str(config_path),
         Shuffles=[shuffle_index],
         trainingsetindex=trainset_index,
         device=device,
         plotting=True,
+        per_keypoint_evaluation=True,
     )
     times.append(time.time())
     log_step(f"Evaluation time: {times[-1] - times[-2]} seconds")
 
     if len(videos) > 0:
         log_step(f"Analyzing videos for {train_fraction}, shuffle {shuffle_index}")
+        video_kwargs = dict(
+            videos=videos, shuffle=shuffle_index, trainingsetindex=trainset_index
+        )
         deeplabcut.analyze_videos(
-            config=str(config_path),
-            videos=videos,
-            shuffle=shuffle_index,
-            trainingsetindex=trainset_index,
-            device=device,
+            str(config_path), **video_kwargs, device=device, auto_track=False
         )
         times.append(time.time())
         log_step(f"Video analysis time: {times[-1] - times[-2]} seconds")
         log_step(f"Total test time: {times[-1] - times[0]} seconds")
 
+        cfg = af.read_config(config_path)
+        if cfg.get("multianimalproject"):
+            if create_labeled_videos:
+                deeplabcut.create_video_with_all_detections(
+                    str(config_path), **video_kwargs
+                )
+
+            # relaxed tracking parameters
+            deeplabcut.convert_detections2tracklets(
+                str(config_path),
+                **video_kwargs,
+                inferencecfg=dict(
+                    boundingboxslack=10,
+                    iou_threshold=0.2,
+                    max_age=5,
+                    method="m1",
+                    min_hits=1,
+                    minimalnumberofconnections=2,
+                    pafthreshold=0.1,
+                    pcutoff=0.1,
+                    topktoretain=3,
+                    variant=0,
+                    withid=False,
+                ),
+            )
+            deeplabcut.stitch_tracklets(str(config_path), **video_kwargs, min_length=3)
+
         if create_labeled_videos:
             log_step(f"Making labeled video, {train_fraction}, shuffle={shuffle_index}")
-            deeplabcut.create_labeled_video(
+            results = deeplabcut.create_labeled_video(
                 config=str(config_path),
                 videos=videos,
                 shuffle=shuffle_index,
                 trainingsetindex=trainset_index,
             )
+            assert all(results), f"Failed to create some labeled video for {videos}"
 
 
 if __name__ == "__main__":
     create_fake_project(
-        path=Path("../synthetic-data-niels"),
+        path=Path("synthetic-data-niels"),
         params=SyntheticProjectParameters(
             multianimal=True,
             num_bodyparts=4,

@@ -17,6 +17,7 @@ Please see AUTHORS for contributors.
 https://github.com/DeepLabCut/DeepLabCut/blob/master/AUTHORS
 Licensed under GNU Lesser General Public License v3.0
 """
+from __future__ import annotations
 
 import os
 from pathlib import Path
@@ -25,15 +26,24 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from matplotlib.collections import LineCollection
+from matplotlib.colors import Colormap
+import matplotlib.patches as patches
 from skimage import io, color
 from tqdm import trange
 
 from deeplabcut.utils import auxiliaryfunctions, auxfun_videos
 
 
-def get_cmap(n, name="hsv"):
-    """Returns a function that maps each index in 0, 1, ..., n-1 to a distinct
-    RGB color; the keyword argument name must be a standard mpl colormap name."""
+def get_cmap(n: int, name: str = "hsv") -> Colormap:
+    """
+    Args:
+        n: number of distinct colors
+        name: name of matplotlib colormap
+
+    Returns:
+         A function that maps each index in 0, 1, ..., n-1 to a distinct
+         RGB color; the keyword argument name must be a standard mpl colormap name.
+    """
     return plt.cm.get_cmap(name, n)
 
 
@@ -65,15 +75,15 @@ def make_labeled_image(
     for scorerindex, loopscorer in enumerate(Scorers):
         for bpindex, bp in enumerate(bodyparts):
             if np.isfinite(
-                DataCombined[loopscorer][bp]["y"][imagenr]
-                + DataCombined[loopscorer][bp]["x"][imagenr]
+                DataCombined[loopscorer][bp]["y"].iloc[imagenr]
+                + DataCombined[loopscorer][bp]["x"].iloc[imagenr]
             ):
                 y, x = (
-                    int(DataCombined[loopscorer][bp]["y"][imagenr]),
-                    int(DataCombined[loopscorer][bp]["x"][imagenr]),
+                    int(DataCombined[loopscorer][bp]["y"].iloc[imagenr]),
+                    int(DataCombined[loopscorer][bp]["x"].iloc[imagenr]),
                 )
                 if cfg["scorer"] not in loopscorer:
-                    p = DataCombined[loopscorer][bp]["likelihood"][imagenr]
+                    p = DataCombined[loopscorer][bp]["likelihood"].iloc[imagenr]
                     if p > pcutoff:
                         ax.plot(
                             x,
@@ -105,21 +115,73 @@ def make_labeled_image(
 
 
 def make_multianimal_labeled_image(
-    frame,
-    coords_truth,
-    coords_pred,
-    probs_pred,
-    colors,
-    dotsize=12,
-    alphavalue=0.7,
-    pcutoff=0.6,
-    labels=["+", ".", "x"],
-    ax=None,
-):
+    frame: np.ndarray,
+    coords_truth: np.ndarray | list,
+    coords_pred: np.ndarray | list,
+    probs_pred: np.ndarray | list,
+    colors: Colormap,
+    dotsize: float | int = 12,
+    alphavalue: float = 0.7,
+    pcutoff: float = 0.6,
+    labels: list = ["+", ".", "x"],
+    ax: plt.Axes | None = None,
+    bounding_boxes: tuple[np.ndarray, np.ndarray] | None = None,
+    bboxes_cutoff: float = 0.6,
+    bboxes_color: Colormap | str | None = None,
+) -> plt.Axes:
+    """
+    Plots groundtruth labels and predictions onto the matplotlib's axes, with the specified graphical parameters.
+
+    Args:
+        frame: image
+        coords_truth: groundtruth labels
+        coords_pred: predictions
+        probs_pred: prediction probabilities
+        colors: colors for poses
+        dotsize: size of dot
+        alphavalue: transparency for the keypoints
+        pcutoff: cut-off confidence value
+        labels: labels to use for ground truth, reliable predictions, and not reliable predictions (confidence below cut-off value)
+        ax: matplotlib plot's axes object
+        bounding_boxes: bounding boxes (top-left corner, size) and their respective confidence levels,
+        bboxes_cutoff: bounding boxes confidence cutoff threshold.
+        bboxes_color: color(s) for the bounding boxes.
+            If Colormap is passed -> each bounding box will be colored into its own color from the colormap.
+            If string is passed -> all bboxes will be of string's defined color.
+            If None -> all bboxes will be colored into a default color.
+
+    Returns:
+        matplotlib Axes object with plotted labels and predictions.
+    """
+
     if ax is None:
         h, w, _ = np.shape(frame)
         _, ax = prepare_figure_axes(w, h)
     ax.imshow(frame, "gray")
+
+    if bounding_boxes is not None:
+        for i, (bbox, bbox_score) in enumerate(
+            zip(bounding_boxes[0], bounding_boxes[1])
+        ):
+            bbox_origin = (bbox[0], bbox[1])
+            (bbox_width, bbox_height) = (bbox[2], bbox[3])
+            if isinstance(bboxes_color, Colormap):
+                bbox_color = bboxes_color(i)
+            elif bboxes_color is None:
+                bbox_color = "red"
+            else:
+                bbox_color = bboxes_color
+            rectangle = patches.Rectangle(
+                bbox_origin,
+                bbox_width,
+                bbox_height,
+                linewidth=1,
+                edgecolor=bbox_color,
+                facecolor="none",
+                linestyle="--" if bbox_score < bboxes_cutoff else "-",
+            )
+            ax.add_patch(rectangle)
+
     for n, data in enumerate(zip(coords_truth, coords_pred, probs_pred)):
         color = colors(n)
         coord_gt, coord_pred, prob_pred = data
@@ -394,6 +456,9 @@ def plot_evaluation_results(
     dot_size: int = 12,
     alpha_value: float = 0.7,
     p_cutoff: float = 0.6,
+    bounding_boxes: dict | None = None,
+    bboxes_cutoff: float = 0.6,
+    bounding_boxes_color: str = "auto",
 ) -> None:
     """
     Creates labeled images using the results of inference, and saves them to an output
@@ -415,7 +480,19 @@ def plot_evaluation_results(
         dot_size: the dot size to use for keypoints
         alpha_value: the alpha value to use for keypoints
         p_cutoff: the p-cutoff for "confident" keypoints
+        bounding_boxes: dictionary with df_combined rows as keys and bounding boxes
+            (np array for coordinates and np array for confidence).
+            None corresponds to no bounding boxes.
+        bboxes_cutoff: bounding boxes confidence cutoff threshold.
+        bounding_boxes_color: If plotting bounding boxes, this is the color that will be used for bounding boxes.
+            If set to "auto" (default value):
+                - if mode is "bodypart", the bbox color will be a default color
+                - if mode is "individual", each individual's color will be used for its bounding box
+
     """
+    if bounding_boxes is None:
+        bounding_boxes = {}
+
     for row_index, row in df_combined.iterrows():
         if isinstance(row_index, str):
             image_rel_path = Path(row_index)
@@ -437,8 +514,24 @@ def plot_evaluation_results(
         df_predictions = row_multi[model_name]
 
         # Shape (num_individuals, num_bodyparts, xy)
-        ground_truth = df_gt.to_numpy().reshape((individuals, bodyparts, 2))
-        predictions = df_predictions.to_numpy().reshape((individuals, bodyparts, 3))
+        try:
+            ground_truth = df_gt.to_numpy().reshape((individuals, bodyparts, 2))
+            predictions = df_predictions.to_numpy().reshape((individuals, bodyparts, 3))
+        except ValueError as e:
+            # Handle cases where the actual data size doesn't match expected shape
+            actual_size_gt = df_gt.size
+            actual_size_pred = df_predictions.size
+            expected_size_gt = individuals * bodyparts * 2
+            expected_size_pred = individuals * bodyparts * 3
+            
+            print(f"Warning: DataFrame reshape failed for {image}")
+            print(f"  Expected: {individuals} individuals, {bodyparts} bodyparts")
+            print(f"  Ground truth: {actual_size_gt} elements (expected {expected_size_gt})")
+            print(f"  Predictions: {actual_size_pred} elements (expected {expected_size_pred})")
+            print(f"  Skipping visualization for this image")
+            continue
+
+        bboxes = bounding_boxes.get(row_index)
 
         if plot_unique_bodyparts:
             row_unique = row.loc[
@@ -448,16 +541,21 @@ def plot_evaluation_results(
             unique_bodyparts = len(
                 row_unique.index.get_level_values("bodyparts").unique()
             )
-            unique_ground_truth = (
-                row_unique[scorer]
-                .to_numpy()
-                .reshape((unique_individuals, unique_bodyparts, 2))
-            )
-            unique_predictions = (
-                row_unique[model_name]
-                .to_numpy()
-                .reshape((unique_individuals, unique_bodyparts, 3))
-            )
+            try:
+                unique_ground_truth = (
+                    row_unique[scorer]
+                    .to_numpy()
+                    .reshape((unique_individuals, unique_bodyparts, 2))
+                )
+                unique_predictions = (
+                    row_unique[model_name]
+                    .to_numpy()
+                    .reshape((unique_individuals, unique_bodyparts, 3))
+                )
+            except ValueError as e:
+                # Handle cases where unique bodyparts reshape fails
+                print(f"Warning: Unique bodyparts reshape failed for {image}, skipping unique bodyparts")
+                plot_unique_bodyparts = False
 
         fig, ax = create_minimal_figure()
         h, w, _ = np.shape(frame)
@@ -479,29 +577,42 @@ def plot_evaluation_results(
         else:
             colors = []
 
+        if bounding_boxes_color == "auto":
+            if mode == "bodypart":
+                bboxes_color = None
+            elif mode == "individual":
+                bboxes_color = get_cmap(individuals + 1, name=colormap)
+            else:
+                raise ValueError(f"Invalid mode: {mode}")
+        else:
+            bboxes_color = bounding_boxes_color
+
         ax = make_multianimal_labeled_image(
-            frame,
-            ground_truth,
-            predictions[:, :, :2],
-            predictions[:, :, 2:],
-            colors,
-            dot_size,
-            alpha_value,
-            p_cutoff,
+            frame=frame,
+            coords_truth=ground_truth,
+            coords_pred=predictions[:, :, :2],
+            probs_pred=predictions[:, :, 2:],
+            colors=colors,
+            dotsize=dot_size,
+            alphavalue=alpha_value,
+            pcutoff=p_cutoff,
             ax=ax,
+            bounding_boxes=bboxes,
+            bboxes_cutoff=bboxes_cutoff,
+            bboxes_color=bboxes_color,
         )
         if plot_unique_bodyparts:
             unique_predictions = unique_predictions.swapaxes(0, 1)
             unique_ground_truth = unique_ground_truth.swapaxes(0, 1)
             ax = make_multianimal_labeled_image(
-                frame,
-                unique_ground_truth,
-                unique_predictions[:, :, :2],
-                unique_predictions[:, :, 2:],
-                colors,
-                dot_size,
-                alpha_value,
-                p_cutoff,
+                frame=frame,
+                coords_truth=unique_ground_truth,
+                coords_pred=unique_predictions[:, :, :2],
+                probs_pred=unique_predictions[:, :, 2:],
+                colors=colors,
+                dotsize=dot_size,
+                alphavalue=alpha_value,
+                pcutoff=p_cutoff,
                 ax=ax,
             )
 

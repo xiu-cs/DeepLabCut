@@ -5,7 +5,7 @@
 Hey there, DLC enthusiast! 🌟 Ready to sprinkle your magic into the main DLC cookbook? Whether you're introducing a zesty new dish or giving an old one a twist, this guide's got your back. We'll walk you through how to publish a new notebook or spice up an existing one in the DLC cookbook. Let's get cooking! 🍲📘
 
 ## Preliminary Checks
-#### Check Existing Recipes or Tutorials
+### Check Existing Recipes or Tutorials
    - **Search and Review**: Before you start writing a new recipe, go through the existing DLC Jupyter book to ensure there isn't a tutorial or recipe that covers the topic you have in mind.
    - **Expand Existing Content**: If your content is related to an existing topic, like I/O manipulations, consider expanding or refining that section instead of creating an entirely new recipe. This ensures that the Jupyter book remains concise and that related information is found in one place.
       - **Locate and Review**: Navigate to the particular recipe or tutorial you wish to update in the DLC Jupyter book.
@@ -133,7 +133,7 @@ This command installs DeepLabCut along with the dependencies required to build t
 
 14. **🎉PR Approval:🎉** Once your PR is approved, the maintainers will merge it into the main repository. Your notebook will then be a part of the DeepLabCut Jupyter book! Yay!
 
-Remember to always check the [DLC CONTRIBUTING guidelines](https://github.com/DeepLabCut/DeepLabCut/blob/main/CONTRIBUTING.md).
+Remember to always check the [DLC contributing guidelines](https://github.com/DeepLabCut/DeepLabCut/blob/main/CONTRIBUTING.md).
 
 
 ## Wrap-Up 🎉

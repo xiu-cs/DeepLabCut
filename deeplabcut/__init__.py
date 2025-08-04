@@ -30,6 +30,7 @@ except (ModuleNotFoundError, ImportError):
         "DLC loaded in light mode; you cannot use any GUI (labeling, relabeling and standalone GUI)"
     )
 
+from deeplabcut.core.engine import Engine
 from deeplabcut.create_project import (
     create_new_project,
     create_new_project_3d,
@@ -59,6 +60,7 @@ from deeplabcut.generate_training_dataset import (
 )
 
 from deeplabcut.modelzoo.video_inference import video_inference_superanimal
+from deeplabcut.pose_estimation_pytorch.modelzoo.superanimal_humanbody_video_inference import analyze_videos_superanimal_humanbody
 
 from deeplabcut.utils import (
     create_labeled_video,
@@ -99,6 +101,7 @@ from deeplabcut.compat import (
     return_evaluate_network_data,
     analyze_videos,
     create_tracking_dataset,
+    analyze_images,
     analyze_time_lapse_frames,
     convert_detections2tracklets,
     extract_maps,

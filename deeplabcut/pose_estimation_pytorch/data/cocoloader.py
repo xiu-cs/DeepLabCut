@@ -49,8 +49,8 @@ class COCOLoader(Loader):
         train_json_filename: str = "train.json",
         test_json_filename: str = "test.json",
     ):
-        super().__init__(Path(model_config_path))
-        self.project_root = Path(project_root)
+        image_root = Path(project_root) / "images"
+        super().__init__(project_root, image_root, Path(model_config_path))
         self.train_json_filename = train_json_filename
         self.test_json_filename = test_json_filename
         self._dataset_parameters = None
@@ -69,14 +69,23 @@ class COCOLoader(Loader):
         """
         if self._dataset_parameters is None:
             num_individuals, bodyparts = self.get_project_parameters(self.train_json)
+
+            crop_cfg = self.model_cfg["data"]["train"].get("top_down_crop", {})
+            crop_w, crop_h = crop_cfg.get("width", 256), crop_cfg.get("height", 256)
+            crop_margin = crop_cfg.get("margin", 0)
+            crop_with_context = crop_cfg.get("crop_with_context", True)
+
             self._dataset_parameters = PoseDatasetParameters(
                 bodyparts=bodyparts,
                 unique_bpts=[],
                 individuals=[f"individual{i}" for i in range(num_individuals)],
                 with_center_keypoints=self.model_cfg.get("with_center_keypoints", False),
                 color_mode=self.model_cfg.get("color_mode", "RGB"),
-                cropped_image_size=self.model_cfg.get("output_size", (256, 256)),
+                top_down_crop_size=(crop_w, crop_h),
+                top_down_crop_margin=crop_margin,
+                top_down_crop_with_context=crop_with_context,
             )
+
         return self._dataset_parameters
 
     @staticmethod
@@ -154,8 +163,7 @@ class COCOLoader(Loader):
 
         return coco_json
 
-    @staticmethod
-    def validate_images(project_root: str | Path, coco_json: dict) -> dict:
+    def validate_images(self, coco_json: dict) -> dict:
         """Goes over images and annotations to look for potential errors
 
         This code tries to ensure that training a model on this project does not crash
@@ -181,7 +189,7 @@ class COCOLoader(Loader):
             if image_filename.is_absolute():
                 image_path = image_filename
             else:
-                image_path = Path(project_root) / "images" / image["file_name"]
+                image_path = self.image_root / image["file_name"]
                 image["file_name"] = str(image_path)
 
             if not image_path.exists():
@@ -232,7 +240,6 @@ class COCOLoader(Loader):
         Returns:
             the train or test data
         """
-        # todo: add validation
         if mode == "train":
             data = self.train_json
         elif mode == "test":
@@ -241,7 +248,7 @@ class COCOLoader(Loader):
             raise AttributeError(f"Unknown mode: {mode}")
 
         data = COCOLoader.validate_categories(data)
-        data = COCOLoader.validate_images(self.project_root, data)
+        data = self.validate_images(data)
 
         annotations_per_image = {}
         for annotation in data["annotations"]:

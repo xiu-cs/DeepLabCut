@@ -13,14 +13,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, Callable
 
 import albumentations as A
-import cv2
 import numpy as np
 import torch
 
-from deeplabcut.pose_estimation_pytorch.data.utils import _crop_and_pad_image_torch
+from deeplabcut.pose_estimation_pytorch.data.image import load_image, top_down_crop
+from deeplabcut.pose_estimation_pytorch.data.utils import bbox_from_keypoints
+
 
 Image = TypeVar("Image", torch.Tensor, np.ndarray, str, Path)
 Context = TypeVar("Context", dict[str, Any], None)
@@ -80,7 +81,11 @@ def build_bottom_up_preprocessor(
 
 
 def build_top_down_preprocessor(
-    color_mode: str, transform: A.BaseCompose, cropped_image_size: tuple[int, int]
+    color_mode: str,
+    transform: A.BaseCompose,
+    top_down_crop_size: tuple[int, int],
+    top_down_crop_margin: int = 0,
+    top_down_crop_with_context: bool = True,
 ) -> Preprocessor:
     """Creates a preprocessor for top-down pose estimation
 
@@ -92,8 +97,9 @@ def build_top_down_preprocessor(
     Args:
         color_mode: whether to load the image as an RGB or BGR
         transform: the transform to apply to the image
-        cropped_image_size: the size of images for each individual to give to the pose
-            estimator
+        top_down_crop_size: the (width, height) to resize cropped bboxes to
+        top_down_crop_margin: the margin to add around detected bboxes for the crop
+        top_down_crop_with_context: whether to keep context when applying the top-down crop
 
     Returns:
         A default top-down Preprocessor
@@ -101,8 +107,57 @@ def build_top_down_preprocessor(
     return ComposePreprocessor(
         components=[
             LoadImage(color_mode),
-            TorchCropDetections(cropped_image_size=cropped_image_size[0]),
+            TopDownCrop(
+                output_size=top_down_crop_size,
+                margin=top_down_crop_margin,
+                with_context=top_down_crop_with_context,
+            ),
             AugmentImage(transform),
+            ToTensor(),
+        ]
+    )
+
+
+def build_conditional_top_down_preprocessor(
+    color_mode: str,
+    transform: A.BaseCompose,
+    bbox_margin: int,
+    top_down_crop_size: tuple[int, int],
+    top_down_crop_margin: int = 0,
+    top_down_crop_with_context: bool = False,
+) -> Preprocessor:
+    """Creates a preprocessor for conditional top-down pose estimation
+
+    Creates a preprocessor that loads an image, computes bounding boxes from conditional
+    keypoints (given as a context (through a "cond_kpts" key), crops all bounding boxes,
+    runs some transforms on each cropped image (such as normalization), creates a tensor
+    from the numpy array (going from (num_ind, h, w, 3) to (num_ind, 3, h, w)).
+
+    Args:
+        color_mode: whether to load the image as an RGB or BGR
+        transform: the transform to apply to the image
+        bbox_margin: The margin to add around keypoints when generating bounding boxes
+            from conditional keypoints.
+        top_down_crop_size: the (width, height) to resize cropped bboxes to
+        top_down_crop_margin: the margin to add around detected bboxes for the crop
+        top_down_crop_with_context: whether to keep context when applying the top-down crop
+
+    Returns:
+        A default conditional top-down Preprocessor
+    """
+    return ComposePreprocessor(
+        components=[
+            LoadImage(color_mode),
+            FilterLowConfidencePoses(),
+            ComputeBoundingBoxesFromCondKeypoints(bbox_margin=bbox_margin),
+            FilterInvalidBoundingBoxes(),
+            TopDownCrop(
+                output_size=top_down_crop_size,
+                margin=top_down_crop_margin,
+                with_context=top_down_crop_with_context,
+            ),
+            AugmentImage(transform),
+            ConditionalKeypointsToModelInputs(),
             ToTensor(),
         ]
     )
@@ -126,18 +181,16 @@ class ComposePreprocessor(Preprocessor):
 class LoadImage(Preprocessor):
     """Loads an image from a file, if not yet loaded"""
 
-    def __init__(self, color_mode: str = "RBG") -> None:
+    def __init__(self, color_mode: str = "RGB") -> None:
         self.color_mode = color_mode
 
     def __call__(self, image: Image, context: Context) -> tuple[np.ndarray, Context]:
         if isinstance(image, (str, Path)):
-            image_ = cv2.imread(str(image))
-            if self.color_mode == "RGB":
-                image_ = cv2.cvtColor(image_, cv2.COLOR_BGR2RGB)
-        else:
-            image_ = image
+            image = load_image(image, color_mode=self.color_mode)
 
-        return image_, context
+        h, w = image.shape[:2]
+        context["image_size"] = w, h
+        return image, context
 
 
 class AugmentImage(Preprocessor):
@@ -297,18 +350,92 @@ class ToTensor(Preprocessor):
 
 
 class ToBatch(Preprocessor):
-    """TODO"""
+    """Adds a batch dimension to the image tensor.
+
+    This preprocessor is used to convert a single image tensor into a batched format
+    by unsqueezing along the 0th dimension. This is typically required before passing
+    the image to models that expect batched input (i.e., shape `[B, C, H, W]`).
+    """
 
     def __call__(self, image: Image, context: Context) -> tuple[np.ndarray, Context]:
         return image.unsqueeze(0), context
 
 
-class TorchCropDetections(Preprocessor):
-    """TODO"""
+class FilterLowConfidencePoses(Preprocessor):
+    """
+    Filters out poses with low confidence scores.
+    By default, the confidence associated to the pose is the max confidence value.
+    """
 
-    def __init__(self, cropped_image_size: int, bbox_format: str = "xywh") -> None:
-        self.cropped_image_size = cropped_image_size
-        self.bbox_format = bbox_format
+    def __init__(
+        self,
+        confidence_threshold: float = 0.05,
+        aggregate_func: Callable[[np.ndarray], float] = lambda arr: np.max(arr, axis=1),
+    ) -> None:
+        self.confidence_threshold = confidence_threshold
+        self.aggregate_func = aggregate_func
+
+    def __call__(
+        self, image: np.ndarray, context: Context
+    ) -> tuple[np.ndarray, Context]:
+        if "cond_kpts" not in context:
+            raise ValueError(f"Must include cond_kpts, found {context}")
+
+        keypoints = context["cond_kpts"]
+        mask = self.aggregate_func(keypoints[:, :, 2]) >= self.confidence_threshold
+        context["cond_kpts"] = keypoints[mask]
+
+        return image, context
+
+
+class FilterInvalidBoundingBoxes(Preprocessor):
+    """Filters out poses and bounding boxes that are invalid (e.g., area too small)."""
+
+    def __init__(self, min_area: int = 1) -> None:
+        self.min_area = min_area
+
+    def __call__(
+        self, image: np.ndarray, context: Context
+    ) -> tuple[np.ndarray, Context]:
+        bboxes = context.get("bboxes", [])
+        keypoints = context.get("cond_kpts", [])
+
+        valid_bboxes = []
+        valid_indices = []
+
+        for i, bbox in enumerate(bboxes):
+            _, _, w, h = bbox
+            if w * h >= self.min_area:
+                valid_bboxes.append(bbox)
+                valid_indices.append(i)
+
+        context["bboxes"] = valid_bboxes
+        context["cond_kpts"] = keypoints[valid_indices]
+
+        return image, context
+
+
+class TopDownCrop(Preprocessor):
+    """Crops bounding boxes out of images for top-down pose estimation
+
+    Args:
+        output_size: The (width, height) of crops to output
+        margin: The margin to add around detected bounding boxes before cropping
+        with_context: Whether to keep context in the top-down crop
+    """
+
+    def __init__(
+        self,
+        output_size: int | tuple[int, int],
+        margin: int = 0,
+        with_context: bool = True,
+    ) -> None:
+        if isinstance(output_size, int):
+            output_size = (output_size, output_size)
+
+        self.output_size = output_size
+        self.margin = margin
+        self.with_context = with_context
 
     def __call__(
         self, image: np.ndarray, context: Context
@@ -319,10 +446,14 @@ class TorchCropDetections(Preprocessor):
 
         images, offsets, scales = [], [], []
         for bbox in context["bboxes"]:
-            cropped_image, offset, scale = _crop_and_pad_image_torch(
-                image, bbox, "xywh", self.cropped_image_size
+            crop, offset, scale = top_down_crop(
+                image,
+                bbox,
+                self.output_size,
+                margin=self.margin,
+                crop_with_context=self.with_context,
             )
-            images.append(cropped_image)
+            images.append(crop)
             offsets.append(offset)
             scales.append(scale)
 
@@ -335,4 +466,54 @@ class TorchCropDetections(Preprocessor):
         else:
             images = np.stack(images, axis=0)
 
+        context["top_down_crop_size"] = self.output_size
         return images, context
+
+
+class ComputeBoundingBoxesFromCondKeypoints(Preprocessor):
+    """Generates bounding boxes from predicted keypoints
+
+    Args:
+        cond_kpt_key: The key under which cond. keypoints are stored in the context.
+        bbox_margin: The margin to add around keypoints when generating bounding boxes.
+    """
+
+    def __init__(self, cond_kpt_key: str = "cond_kpts", bbox_margin: int = 0) -> None:
+        self.cond_kpt_key = cond_kpt_key
+        self.bbox_margin = bbox_margin
+
+    def __call__(
+        self, image: np.ndarray, context: Context
+    ) -> tuple[np.ndarray, Context]:
+        """TODO: numpy implementation"""
+        if "cond_kpts" not in context:
+            raise ValueError(
+                f"Must include cond kpts to ComputeBBoxes, found {context}"
+            )
+
+        h, w = image.shape[:2]
+        context["bboxes"] = [
+            bbox_from_keypoints(cond_kpts, h, w, self.bbox_margin)
+            for cond_kpts in context[self.cond_kpt_key]
+        ]
+        return image, context
+
+
+class ConditionalKeypointsToModelInputs(Preprocessor):
+
+    def __init__(self, cond_kpt_key: str = "cond_kpts") -> None:
+        self.cond_kpt_key = cond_kpt_key
+
+    def __call__(
+        self, image: np.ndarray, context: Context
+    ) -> tuple[np.ndarray, Context]:
+        cond_keypoints = context[self.cond_kpt_key]
+        if len(cond_keypoints) == 0:
+            return image, context
+
+        rescaled = cond_keypoints.copy()
+        rescaled[..., :2] = (
+            rescaled[..., :2] - np.array(context["offsets"])[:, None]
+        ) / np.array(context["scales"])[:, None]
+        context["model_kwargs"] = {"cond_kpts": np.expand_dims(rescaled, axis=1)}
+        return image, context

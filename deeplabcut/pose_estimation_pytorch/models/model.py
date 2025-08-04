@@ -56,13 +56,14 @@ class PoseModel(nn.Module):
         self.backbone = backbone
         self.heads = nn.ModuleDict(heads)
         self.neck = neck
+        self.output_features = False
 
         self._strides = {
             name: _model_stride(self.backbone.stride, head.stride)
             for name, head in heads.items()
         }
 
-    def forward(self, x: torch.Tensor) -> dict[str, dict[str, torch.Tensor]]:
+    def forward(self, x: torch.Tensor, **backbone_kwargs) -> dict[str, dict[str, torch.Tensor]]:
         """
         Forward pass of the PoseModel.
 
@@ -74,11 +75,14 @@ class PoseModel(nn.Module):
         """
         if x.dim() == 3:
             x = x[None, :]
-        features = self.backbone(x)
+        features = self.backbone(x, **backbone_kwargs)
         if self.neck:
             features = self.neck(features)
 
         outputs = {}
+        if self.output_features:
+            outputs["backbone"] = dict(features=features)
+
         for head_name, head in self.heads.items():
             outputs[head_name] = head(features)
         return outputs
@@ -129,10 +133,27 @@ class PoseModel(nn.Module):
         Returns:
             A dictionary containing the predictions of each head group
         """
-        return {
+        predictions = {
             name: head.predictor(self._strides[name], outputs[name])
             for name, head in self.heads.items()
         }
+        if self.output_features:
+            predictions["backbone"] = outputs["backbone"]
+
+        return predictions
+
+    def get_stride(self, head: str) -> int:
+        """
+        Args:
+            head: The head for which to get the total stride.
+
+        Returns:
+            The total stride for the outputs of the head.
+
+        Raises:
+            ValueError: If there is no such head.
+        """
+        return self._strides[head]
 
     @staticmethod
     def build(

@@ -47,7 +47,7 @@ def pytorch_config_paths() -> list[str]:
 
 setuptools.setup(
     name="deeplabcut",
-    version="3.0.0rc6",
+    version="3.0.0rc11",
     author="A. & M.W. Mathis Labs",
     author_email="alexander@deeplabcut.org",
     description="Markerless pose-estimation of user-defined features with deep learning",
@@ -58,7 +58,6 @@ setuptools.setup(
         "albumentations<=1.4.3",
         "dlclibrary>=0.0.7",
         "einops",
-        "dlclibrary>=0.0.6",
         "filterpy>=1.4.4",
         "ruamel.yaml>=0.15.0",
         "imgaug>=0.4.0",
@@ -66,13 +65,12 @@ setuptools.setup(
         "numba>=0.54",
         "matplotlib>=3.3,<3.9,!=3.7.0,!=3.7.1",
         "networkx>=2.6",
-        "numpy>=1.18.5",
+        "numpy>=1.18.5,<2.0.0",
         "pandas>=1.0.1,!=1.5.0",
         "scikit-image>=0.17",
         "scikit-learn>=1.0",
-        "scipy>=1.4,<1.11.0",
+        "scipy>=1.9",
         "statsmodels>=0.11",
-        "tables==3.8.0",
         "timm",
         "torch>=2.0.0",
         "torchvision",
@@ -90,7 +88,8 @@ setuptools.setup(
         "openvino": ["openvino-dev==2022.1.0"],
         "docs": ["numpydoc"],
         "tf": [
-            "tensorflow>=2.0,<=2.10",
+            "tensorflow>=2.0,<=2.10;platform_system=='Windows'",
+            "tensorflow>=2.0,<=2.12;platform_system!='Windows'",
             "tensorpack>=0.11",
             "tf_slim>=1.1.0",
         ],  # Last supported TF version on Windows Native is 2.10
@@ -138,7 +137,7 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     entry_points="""[console_scripts]
-            dlc=dlc:main""",
+            dlc=deeplabcut.__main__:main""",
 )
 
 # https://www.python.org/dev/peps/pep-0440/#compatible-release
