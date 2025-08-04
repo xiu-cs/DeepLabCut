@@ -520,7 +520,7 @@ def visualize_predictions_PFM(
             # print("bbox_scores:", bbox_scores)
             bounding_boxes = (
                 (bboxes, bbox_scores)
-                if bbox_scores is not None and bbox_scores is not None
+                if bbox_scores is not None and bboxes is not None
                 else None
             )
         else:
