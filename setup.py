@@ -47,7 +47,7 @@ def pytorch_config_paths() -> list[str]:
 
 setuptools.setup(
     name="deeplabcut",
-    version="3.0.0rc8",
+    version="3.0.0rc11",
     author="A. & M.W. Mathis Labs",
     author_email="alexander@deeplabcut.org",
     description="Markerless pose-estimation of user-defined features with deep learning",
@@ -58,7 +58,6 @@ setuptools.setup(
         "albumentations<=1.4.3",
         "dlclibrary>=0.0.7",
         "einops",
-        "dlclibrary>=0.0.6",
         "filterpy>=1.4.4",
         "ruamel.yaml>=0.15.0",
         "imgaug>=0.4.0",
@@ -72,7 +71,6 @@ setuptools.setup(
         "scikit-learn>=1.0",
         "scipy>=1.9",
         "statsmodels>=0.11",
-        "tables==3.8.0",
         "timm",
         "torch>=2.0.0",
         "torchvision",
