@@ -65,7 +65,7 @@ class ViT(BaseBackbone):
         if dino_pretrained:
             # Load DINO pretrained model
             self.model = self._load_dino_model(dino_arch, patch_size)
-        else:
+        elif pretrained:
             # Use timm model with optional ImageNet pretraining
             self.model = timm.create_model(
                 model_name,
