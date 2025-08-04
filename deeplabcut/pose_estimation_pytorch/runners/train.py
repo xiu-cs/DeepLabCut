@@ -439,7 +439,7 @@ class PoseTrainingRunner(TrainingRunner[PoseModel]):
         if mode == "train":
             self.optimizer.zero_grad()
 
-        inputs = batch["image"] # [B,3, 256, 256]
+        inputs = batch["image"] # [batch_size, channels, height, width]
         inputs = inputs.to(self.device).float()
         if 'cond_keypoints' in batch['context']:
             cond_kpts = batch['context']['cond_keypoints']
