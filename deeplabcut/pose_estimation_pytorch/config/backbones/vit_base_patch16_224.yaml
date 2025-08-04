@@ -1,0 +1,14 @@
+model:
+  backbone:
+    type: ViT
+    model_name: vit_base_patch16_224
+    img_size: 224
+    pretrained: false
+    dino_pretrained: true
+    dino_arch: vit_base
+    patch_size: 16
+    drop_rate: 0.0
+    drop_path_rate: 0.1
+    freeze_bn_stats: false
+    freeze_bn_weights: false
+  backbone_output_channels: 768  # ViT-Base feature dimension
