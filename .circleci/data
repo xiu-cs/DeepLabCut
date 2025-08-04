@@ -1,1 +1,1 @@
-/home/ti_wang/data
+${DATA_DIR:-./data}
