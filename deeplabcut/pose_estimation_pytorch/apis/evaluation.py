@@ -52,7 +52,6 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from typing import Optional, Union, List, Tuple, Dict
 import logging
-import matplotlib.patches as patches
 
 def predict(
     pose_runner: InferenceRunner,
